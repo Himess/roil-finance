@@ -1,0 +1,72 @@
+-- | Canton Featured App Rewards integration
+-- Records platform activity for the Canton Network App Rewards program.
+-- On the real Canton Network, this would exercise
+-- FeaturedAppRight_CreateActivityMarker from splice-api-featured-app-v1
+-- to generate AppRewardCoupons. For now, we record locally and the
+-- integration points are clearly marked.
+module FeaturedApp where
+
+-- | Activity types for reward tracking
+data ActivityType
+  = Rebalance
+  | DCAExecution
+  | CompoundExecution
+  | RewardDistribution
+  deriving (Eq, Show)
+
+-- | Activity record for featured app rewards
+-- This template records platform activity for Canton App Rewards.
+-- On the real network, this would exercise FeaturedAppRight_CreateActivityMarker
+-- from splice-api-featured-app-v1. For now, we record locally and the
+-- integration point is clearly marked.
+template ActivityRecord
+  with
+    platform : Party
+    user : Party
+    activityType : ActivityType
+    description : Text
+    timestamp : Text
+  where
+    signatory platform
+    observer user
+
+-- | Platform-level featured app configuration
+template FeaturedAppConfig
+  with
+    platform : Party
+    appName : Text
+    isRegistered : Bool     -- true when registered with GSF
+    featuredAppRightCid : Optional Text  -- CID of FeaturedAppRight on real network
+    totalActivities : Int
+  where
+    signatory platform
+
+    -- Record an activity and optionally create activity marker
+    choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityRecord)
+      with
+        user : Party
+        activityType : ActivityType
+        description : Text
+        timestamp : Text
+      controller platform
+      do
+        -- INTEGRATION POINT: On real Canton Network, exercise:
+        -- FeaturedAppRight_CreateActivityMarker featuredAppRightCid
+        --   with beneficiary = platform
+        -- This creates an AppRewardCoupon automatically.
+
+        configCid <- create this with totalActivities = totalActivities + 1
+        activityCid <- create ActivityRecord with
+          platform; user; activityType; description; timestamp
+        pure (configCid, activityCid)
+
+    -- Update registration status (after registering with GSF)
+    choice UpdateRegistration : ContractId FeaturedAppConfig
+      with
+        newIsRegistered : Bool
+        newFeaturedAppRightCid : Optional Text
+      controller platform
+      do
+        create this with
+          isRegistered = newIsRegistered
+          featuredAppRightCid = newFeaturedAppRightCid

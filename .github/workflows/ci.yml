@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+env:
+  JAVA_TOOL_OPTIONS: "-Duser.language=en -Duser.country=US"
+
+jobs:
+  daml-build-test:
+    name: Daml Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Install Daml SDK
+        run: |
+          curl -sSL https://get.daml.com/ | sh -s 3.4.11
+          echo "$HOME/.daml/bin" >> $GITHUB_PATH
+
+      - name: Build contracts
+        run: cd main && daml build
+
+      - name: Run tests
+        run: cd test && daml build && daml test
+
+      - name: Upload DAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: canton-rebalancer-dar
+          path: main/.daml/dist/canton-rebalancer-0.1.0.dar
+
+  backend:
+    name: Backend Build & Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  frontend:
+    name: Frontend Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ui
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+      - run: npm run build

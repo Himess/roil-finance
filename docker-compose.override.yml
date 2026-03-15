@@ -1,0 +1,61 @@
+# =============================================================================
+# Canton Rebalancer — Docker Compose Override
+# =============================================================================
+# This file extends the cn-quickstart docker-compose.yml with the
+# rebalancer backend and frontend services.
+#
+# Usage (from .cn-quickstart/):
+#   docker compose -f docker-compose.yml -f ../docker-compose.override.yml up -d
+#
+# Or use the setup script which handles this automatically:
+#   ./scripts/setup-localnet.sh
+# =============================================================================
+
+services:
+  rebalancer-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: rebalancer-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - PORT=3001
+      - CANTON_NETWORK=localnet
+      - JSON_API_URL=http://json-api-app-provider:3975
+      - GRPC_API_URL=http://participant-app-provider:3901
+      - SCAN_URL=http://scan:4000
+      - JWT_MODE=unsafe
+      - JWT_AUDIENCE=https://daml.com/jwt/aud/participant/sandbox
+      - LEDGER_USER_ID=app-provider
+      - APPLICATION_ID=canton-rebalancer
+      - DAML_PACKAGE_NAME=canton-rebalancer
+    depends_on:
+      json-api-app-provider:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  rebalancer-frontend:
+    build:
+      context: ./ui
+      dockerfile: Dockerfile
+    container_name: rebalancer-frontend
+    ports:
+      - "5173:80"
+    depends_on:
+      rebalancer-backend:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

@@ -1,0 +1,194 @@
+-- | Portfolio management contract for the Canton Private Rebalancer
+-- Each user has one Portfolio contract that tracks their target allocations,
+-- current holdings, and rebalance configuration.
+module Portfolio where
+
+import Types
+
+-- | Proposal for creating a portfolio (platform invites user)
+template PortfolioProposal
+  with
+    platform : Party     -- the rebalancer platform operator
+    user     : Party     -- the portfolio owner
+  where
+    signatory platform
+    observer user
+
+    -- User accepts the proposal and sets up their portfolio
+    choice AcceptProposal : ContractId Portfolio
+      with
+        targets     : [TargetAllocation]
+        triggerMode : TriggerMode
+      controller user
+      do
+        assertMsg "Targets must sum to 100%" (validateTargets targets)
+        assertMsg "Must have at least 2 assets" (length targets >= 2)
+        create Portfolio with
+          platform
+          user
+          targets
+          holdings = []
+          triggerMode
+          totalRebalances = 0
+          isActive = True
+
+    -- Platform can withdraw the proposal
+    choice WithdrawProposal : ()
+      controller platform
+      do pure ()
+
+-- | Main portfolio contract
+-- Signatory: platform (ensures integrity of rebalance operations)
+-- Observer: user (can see their portfolio at all times)
+template Portfolio
+  with
+    platform        : Party
+    user            : Party
+    targets         : [TargetAllocation]    -- target allocation percentages
+    holdings        : [Holding]             -- current asset holdings
+    triggerMode     : TriggerMode           -- manual or auto-drift
+    totalRebalances : Int                   -- lifetime rebalance count
+    isActive        : Bool
+  where
+    signatory platform, user
+    ensure validateTargets targets && length targets >= 2
+
+    -- User updates their target allocations
+    choice UpdateTargets : ContractId Portfolio
+      with
+        newTargets : [TargetAllocation]
+      controller user
+      do
+        assertMsg "Targets must sum to 100%" (validateTargets newTargets)
+        assertMsg "Must have at least 2 assets" (length newTargets >= 2)
+        create this with targets = newTargets
+
+    -- User changes the trigger mode
+    choice UpdateTriggerMode : ContractId Portfolio
+      with
+        newMode : TriggerMode
+      controller user
+      do
+        create this with triggerMode = newMode
+
+    -- Platform updates holdings after syncing with on-chain balances
+    -- This is called by the backend after querying actual token balances
+    choice SyncHoldings : ContractId Portfolio
+      with
+        newHoldings : [Holding]
+      controller platform
+      do
+        create this with holdings = newHoldings
+
+    -- Check if rebalance is needed based on current drift
+    nonconsuming choice CheckDrift : Decimal
+      controller platform
+      do
+        pure (calcMaxDrift targets holdings)
+
+    -- Initiate a rebalance operation
+    -- Returns a RebalanceRequest that the backend will execute via Cantex
+    choice InitiateRebalance : (ContractId Portfolio, ContractId RebalanceRequest)
+      controller platform
+      do
+        let drift = calcMaxDrift targets holdings
+        -- For auto-trigger, verify drift exceeds threshold
+        case triggerMode of
+          DriftThreshold threshold ->
+            assertMsg "Drift below threshold" (drift >= threshold)
+          Manual -> pure ()
+
+        let newPortfolio = this with totalRebalances = totalRebalances + 1
+        portfolioCid <- create newPortfolio
+        requestCid <- create RebalanceRequest with
+          platform
+          user
+          currentHoldings = holdings
+          targetAllocations = targets
+          status = Pending
+          swapLegs = []
+          requestedAt = "pending"  -- will be set by trigger/backend
+        pure (portfolioCid, requestCid)
+
+    -- User deactivates the portfolio
+    choice DeactivatePortfolio : ContractId Portfolio
+      controller user
+      do
+        create this with isActive = False
+
+    -- User reactivates the portfolio
+    choice ActivatePortfolio : ContractId Portfolio
+      controller user
+      do
+        create this with isActive = True
+
+-- | Rebalance request — created when a rebalance is initiated
+-- The backend service processes this by executing swaps via Cantex
+template RebalanceRequest
+  with
+    platform          : Party
+    user              : Party
+    currentHoldings   : [Holding]
+    targetAllocations : [TargetAllocation]
+    status            : RebalanceStatus
+    swapLegs          : [SwapLeg]
+    requestedAt       : Text         -- ISO timestamp
+  where
+    signatory platform, user
+
+    -- Platform calculates and sets the swap legs needed
+    choice SetSwapLegs : ContractId RebalanceRequest
+      with
+        legs : [SwapLeg]
+      controller platform
+      do
+        assertMsg "Must have at least 1 swap leg" (not (null legs))
+        create this with
+          swapLegs = legs
+          status = Executing
+
+    -- Platform marks rebalance as completed after successful execution
+    choice CompleteRebalance : ContractId RebalanceLog
+      with
+        executedLegs : [SwapLeg]
+        completedAt  : Text
+      controller platform
+      do
+        logCid <- create RebalanceLog with
+          platform
+          user
+          swapLegs = executedLegs
+          driftBefore = calcMaxDrift targetAllocations currentHoldings
+          timestamp = completedAt
+
+        -- FEATURED APP REWARDS INTEGRATION POINT:
+        -- After a successful rebalance, the backend should call
+        -- FeaturedAppConfig.RecordActivity with:
+        --   activityType = Rebalance
+        --   description  = "Portfolio rebalance: <N> swap legs executed"
+        -- On the real Canton Network, this will exercise
+        -- FeaturedAppRight_CreateActivityMarker to generate an
+        -- AppRewardCoupon, earning CC rewards for the platform.
+
+        pure logCid
+
+    -- Platform marks rebalance as failed
+    choice FailRebalance : ContractId RebalanceRequest
+      with
+        reason : Text
+      controller platform
+      do
+        create this with status = Failed reason
+
+-- | Immutable log of a completed rebalance
+-- Serves as audit trail and history for the user
+template RebalanceLog
+  with
+    platform    : Party
+    user        : Party
+    swapLegs    : [SwapLeg]
+    driftBefore : Decimal
+    timestamp   : Text
+  where
+    signatory platform
+    observer user

@@ -1,0 +1,138 @@
+-- | Reward tracking system for the Canton Private Rebalancer
+-- Tracks user activity (TX count) and assigns loyalty tiers.
+-- Higher tiers earn fee rebates, encouraging continued usage.
+module RewardTracker where
+
+import Types
+
+-- | Per-user reward tracker — one per user per month
+template RewardTracker
+  with
+    platform           : Party
+    user               : Party
+    monthId            : Text          -- e.g., "2026-03"
+    txCount            : Int           -- valid TXs this month
+    tier               : RewardTier
+    consecutiveMonths  : Int           -- months at or above current tier
+    totalRewardsEarned : Decimal       -- lifetime CC rewards
+  where
+    signatory platform
+    observer user
+
+    -- Platform records a valid transaction
+    -- Called after each rebalance, DCA, or compound TX
+    choice RecordTx : ContractId RewardTracker
+      with
+        txMinValue : Decimal   -- minimum value threshold (anti-spam)
+        txValue    : Decimal   -- actual TX value
+      controller platform
+      do
+        -- Only count TXs above minimum threshold (anti-spam)
+        let validTx = if txValue >= txMinValue then 1 else 0
+        let newCount = txCount + validTx
+        let newTier = getTier newCount
+        create this with
+          txCount = newCount
+          tier = newTier
+
+    -- Platform distributes monthly rewards based on tier
+    choice DistributeReward : (ContractId RewardTracker, ContractId RewardPayout)
+      with
+        rewardAmount : Decimal
+        newMonthId   : Text
+      controller platform
+      do
+        -- Create the payout record
+        payoutCid <- create RewardPayout with
+          platform
+          user
+          amount = rewardAmount
+          tier
+          monthId
+          txCount
+
+        -- Roll over to new month tracker
+        let newConsecutive =
+              if getTier txCount >= tier
+              then consecutiveMonths + 1
+              else 1  -- reset if tier dropped
+
+        trackerCid <- create RewardTracker with
+          platform
+          user
+          monthId = newMonthId
+          txCount = 0
+          tier = getTier txCount  -- carry tier from last month's final count
+          consecutiveMonths = newConsecutive
+          totalRewardsEarned = totalRewardsEarned + rewardAmount
+
+        pure (trackerCid, payoutCid)
+
+    -- User views their current stats (nonconsuming)
+    nonconsuming choice ViewStats : (Int, RewardTier, Int, Decimal)
+      controller user
+      do
+        pure (txCount, tier, consecutiveMonths, totalRewardsEarned)
+
+-- | Record of a reward payout
+template RewardPayout
+  with
+    platform : Party
+    user     : Party
+    amount   : Decimal       -- CC reward amount
+    tier     : RewardTier
+    monthId  : Text
+    txCount  : Int
+  where
+    signatory platform
+    observer user
+
+-- | Fee rebate schedule per tier
+-- Bronze:   0.5% fee back
+-- Silver:   1.0% fee back
+-- Gold:     2.0% fee back
+-- Platinum: 3.0% fee back
+getFeeRebatePct : RewardTier -> Decimal
+getFeeRebatePct Bronze   = 0.5
+getFeeRebatePct Silver   = 1.0
+getFeeRebatePct Gold     = 2.0
+getFeeRebatePct Platinum = 3.0
+
+-- | Referral tracking
+template Referral
+  with
+    platform : Party
+    referrer : Party       -- the user who referred
+    referee  : Party       -- the new user
+    isActive : Bool
+    referrerBonusPct : Decimal   -- % of referee's TX rewards shared
+  where
+    signatory platform
+    observer referrer, referee
+
+    -- Platform records a referee TX and credits referrer
+    choice CreditReferrer : ContractId ReferralCredit
+      with
+        refereeTxValue : Decimal
+        timestamp      : Text
+      controller platform
+      do
+        let bonusAmount = refereeTxValue * (referrerBonusPct / 100.0)
+        create ReferralCredit with
+          platform
+          referrer
+          referee
+          amount = bonusAmount
+          timestamp
+
+-- | Record of referral bonus credit
+template ReferralCredit
+  with
+    platform  : Party
+    referrer  : Party
+    referee   : Party
+    amount    : Decimal
+    timestamp : Text
+  where
+    signatory platform
+    observer referrer

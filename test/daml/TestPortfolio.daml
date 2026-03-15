@@ -1,0 +1,349 @@
+-- | Tests for Portfolio and Rebalance contracts
+module TestPortfolio where
+
+import Daml.Script
+import Types
+import Portfolio
+import DCA
+import RewardTracker
+import qualified FeaturedApp
+
+-- | Helper: create test asset IDs
+mkAssetId : Party -> Text -> AssetId
+mkAssetId admin symbol = AssetId with symbol; admin
+
+-- | Helper: record N transactions (top-level to avoid local recursion)
+recordTxs : Party -> ContractId RewardTracker -> Int -> Script (ContractId RewardTracker)
+recordTxs _ cid 0 = pure cid
+recordTxs platform cid n = do
+  newCid <- submit platform do
+    exerciseCmd cid RecordTx with
+      txMinValue = 10.0
+      txValue = 50.0
+  recordTxs platform newCid (n - 1)
+
+-- | Test: Full portfolio lifecycle
+-- Create proposal -> accept -> set targets -> sync holdings -> check drift -> rebalance
+testPortfolioLifecycle : Script ()
+testPortfolioLifecycle = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+  let cbtc  = mkAssetId tokenAdmin "CBTC"
+
+  -- 1. Platform creates portfolio proposal for Alice
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  -- 2. Alice accepts with target allocations
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    40.0
+        , TargetAllocation usdcx 35.0
+        , TargetAllocation cbtc  25.0
+        ]
+      triggerMode = DriftThreshold 5.0
+
+  -- 3. Platform syncs holdings (simulating on-chain balance query)
+  portfolioCid <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    1000.0 400.0
+        , Holding usdcx 250.0  250.0
+        , Holding cbtc  0.5    250.0
+        ]
+
+  -- 4. Check drift
+  drift <- submit platform do
+    exerciseCmd portfolioCid CheckDrift
+
+  debug ("Max drift: " <> show drift)
+
+  -- 5. Create more extreme drift scenario
+  portfolioCid <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    2000.0 600.0    -- 60% vs target 40% = 20% drift
+        , Holding usdcx 150.0  150.0    -- 15% vs target 35% = 20% drift
+        , Holding cbtc  0.5    250.0    -- 25% vs target 25% = 0% drift
+        ]
+
+  -- 6. Initiate rebalance (drift > 5% threshold)
+  (portfolioCid, rebalanceCid) <- submit platform do
+    exerciseCmd portfolioCid InitiateRebalance
+
+  -- 7. Platform sets swap legs
+  rebalanceCid <- submit platform do
+    exerciseCmd rebalanceCid SetSwapLegs with
+      legs =
+        [ SwapLeg cc usdcx 200.0 200.0
+        ]
+
+  -- 8. Complete rebalance
+  logCid <- submit platform do
+    exerciseCmd rebalanceCid CompleteRebalance with
+      executedLegs = [ SwapLeg cc usdcx 200.0 198.5 ]
+      completedAt = "2026-03-15T10:00:00Z"
+
+  -- Verify log exists
+  logs <- query @RebalanceLog alice
+  assertMsg "Should have 1 rebalance log" (length logs == 1)
+
+  pure ()
+
+-- | Test: Target validation
+testTargetValidation : Script ()
+testTargetValidation = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  -- Should fail: targets don't sum to 100%
+  submitMustFail alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 30.0
+        ]
+      triggerMode = Manual
+
+  pure ()
+
+-- | Test: Target must have at least 2 assets
+testMinAssets : Script ()
+testMinAssets = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAssetId tokenAdmin "CC"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  -- Should fail: only 1 asset
+  submitMustFail alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets = [ TargetAllocation cc 100.0 ]
+      triggerMode = Manual
+
+  pure ()
+
+-- | Test: Update targets
+testUpdateTargets : Script ()
+testUpdateTargets = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+  let cbtc  = mkAssetId tokenAdmin "CBTC"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with platform; user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 50.0
+        ]
+      triggerMode = Manual
+
+  -- Update to 3-asset portfolio
+  portfolioCid <- submit alice do
+    exerciseCmd portfolioCid UpdateTargets with
+      newTargets =
+        [ TargetAllocation cc    40.0
+        , TargetAllocation usdcx 35.0
+        , TargetAllocation cbtc  25.0
+        ]
+
+  portfolios <- query @Portfolio alice
+  assertMsg "Should have 1 portfolio" (length portfolios == 1)
+
+  pure ()
+
+-- | Test: DCA full lifecycle
+testDCALifecycle : Script ()
+testDCALifecycle = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+  let cbtc  = mkAssetId tokenAdmin "CBTC"
+
+  -- Create DCA schedule: buy CBTC with 100 USDCx weekly
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = cbtc
+      amountPerBuy = 100.0
+      frequency = Weekly
+      totalExecutions = 0
+      isActive = True
+      createdAt = "2026-03-15T10:00:00Z"
+
+  -- Execute DCA
+  (scheduleCid, execCid) <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA
+
+  -- Complete execution
+  logCid <- submit platform do
+    exerciseCmd execCid CompleteDCAExecution with
+      receivedAmount = 0.0025
+      completedAt = "2026-03-22T10:00:00Z"
+
+  -- Execute again
+  (scheduleCid, execCid) <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA
+
+  logCid <- submit platform do
+    exerciseCmd execCid CompleteDCAExecution with
+      receivedAmount = 0.0024
+      completedAt = "2026-03-29T10:00:00Z"
+
+  -- Verify 2 execution logs
+  logs <- query @DCALog alice
+  assertMsg "Should have 2 DCA logs" (length logs == 2)
+
+  -- Pause DCA
+  scheduleCid <- submit alice do
+    exerciseCmd scheduleCid PauseDCA
+
+  -- Should fail: DCA is paused
+  submitMustFail platform do
+    exerciseCmd scheduleCid ExecuteDCA
+
+  pure ()
+
+-- | Test: Reward tracking
+testRewardTracking : Script ()
+testRewardTracking = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  -- Create reward tracker for March
+  trackerCid <- submit platform do
+    createCmd RewardTracker with
+      platform
+      user = alice
+      monthId = "2026-03"
+      txCount = 0
+      tier = Bronze
+      consecutiveMonths = 0
+      totalRewardsEarned = 0.0
+
+  -- Record 55 transactions (should reach Silver)
+  trackerCid <- recordTxs platform trackerCid 55
+
+  -- Check stats
+  (count, tier, _, _) <- submit alice do
+    exerciseCmd trackerCid ViewStats
+
+  assertMsg "Should have 55 TXs" (count == 55)
+  assertMsg "Should be Silver tier" (tier == Silver)
+
+  -- Distribute reward and roll over
+  (newTrackerCid, payoutCid) <- submit platform do
+    exerciseCmd trackerCid DistributeReward with
+      rewardAmount = 10.0
+      newMonthId = "2026-04"
+
+  -- Verify payout
+  payouts <- query @RewardPayout alice
+  assertMsg "Should have 1 payout" (length payouts == 1)
+
+  pure ()
+
+-- | Test: Featured App Rewards integration
+testFeaturedApp : Script ()
+testFeaturedApp = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  -- Create featured app config
+  configCid <- submit platform do
+    createCmd FeaturedApp.FeaturedAppConfig with
+      platform
+      appName = "Canton Rebalancer"
+      isRegistered = False
+      featuredAppRightCid = None
+      totalActivities = 0
+
+  -- Record a rebalance activity
+  (configCid, activityCid1) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      description = "Portfolio rebalance executed"
+      timestamp = "2026-03-15T12:00:00Z"
+
+  -- Verify Alice can see the activity
+  aliceActivities <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Alice should have 1 activity" (length aliceActivities == 1)
+
+  -- Record a DCA execution activity
+  (configCid, activityCid2) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.DCAExecution
+      description = "DCA #1: 100 USDCx -> CBTC"
+      timestamp = "2026-03-15T13:00:00Z"
+
+  -- Record activity for a different user
+  (configCid, activityCid3) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = bob
+      activityType = FeaturedApp.CompoundExecution
+      description = "Compound yield reinvested"
+      timestamp = "2026-03-15T14:00:00Z"
+
+  -- Verify activity counts
+  aliceActivities <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Alice should have 2 activities" (length aliceActivities == 2)
+
+  bobActivities <- query @FeaturedApp.ActivityRecord bob
+  assertMsg "Bob should have 1 activity" (length bobActivities == 1)
+
+  -- Update registration status (simulating GSF registration)
+  configCid <- submit platform do
+    exerciseCmd configCid FeaturedApp.UpdateRegistration with
+      newIsRegistered = True
+      newFeaturedAppRightCid = Some "00abc123deadbeef"
+
+  -- Record reward distribution activity after registration
+  (configCid, activityCid4) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.RewardDistribution
+      description = "Monthly rewards distributed: 10.0 CC"
+      timestamp = "2026-04-01T00:05:00Z"
+
+  -- Verify total activities (4 recorded)
+  allActivities <- query @FeaturedApp.ActivityRecord platform
+  assertMsg "Platform should see 4 activities" (length allActivities == 4)
+
+  pure ()

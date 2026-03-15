@@ -1,0 +1,28 @@
+node_modules/
+dist/
+.daml/
+*.dar
+.env
+.env.local
+*.log
+
+# Frontend
+ui/node_modules/
+ui/dist/
+
+# Backend
+backend/node_modules/
+backend/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Canton setup files (large binaries)
+setup/
+.cn-quickstart/

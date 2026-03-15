@@ -1,0 +1,94 @@
+-- | Core types for the Canton Private Rebalancer
+module Types where
+
+-- | Supported asset identifiers on Canton Network
+data AssetId = AssetId
+  with
+    symbol : Text       -- e.g., "CC", "USDCx", "CBTC"
+    admin  : Party      -- token issuer/admin party
+  deriving (Eq, Show, Ord)
+
+-- | A single allocation target within a portfolio
+data TargetAllocation = TargetAllocation
+  with
+    asset      : AssetId
+    targetPct  : Decimal   -- target percentage (0.0 - 100.0)
+  deriving (Eq, Show)
+
+-- | Current holding of a single asset
+data Holding = Holding
+  with
+    asset   : AssetId
+    amount  : Decimal     -- current amount held
+    valueCc : Decimal     -- value in CC terms (for % calculation)
+  deriving (Eq, Show)
+
+-- | DCA frequency options
+data DCAFrequency
+  = Hourly
+  | Daily
+  | Weekly
+  | Monthly
+  deriving (Eq, Show)
+
+-- | Rebalance trigger mode
+data TriggerMode
+  = Manual                   -- user-triggered only
+  | DriftThreshold Decimal   -- auto when drift exceeds threshold %
+  deriving (Eq, Show)
+
+-- | Reward tier levels
+data RewardTier
+  = Bronze     -- 0-50 TX/month
+  | Silver     -- 51-200 TX/month
+  | Gold       -- 201-500 TX/month
+  | Platinum   -- 500+ TX/month
+  deriving (Eq, Show, Ord)
+
+-- | Status of a rebalance execution
+data RebalanceStatus
+  = Pending
+  | Executing
+  | Completed
+  | Failed Text   -- failure reason
+  deriving (Eq, Show)
+
+-- | A single swap leg in a rebalance operation
+data SwapLeg = SwapLeg
+  with
+    fromAsset  : AssetId
+    toAsset    : AssetId
+    fromAmount : Decimal
+    toAmount   : Decimal
+  deriving (Eq, Show)
+
+-- | Calculate the drift of a portfolio from its targets
+-- Returns the maximum absolute deviation across all assets
+calcMaxDrift : [TargetAllocation] -> [Holding] -> Decimal
+calcMaxDrift targets holdings =
+  let
+    totalValue = foldl (\acc h -> acc + h.valueCc) 0.0 holdings
+    getDrift target =
+      let
+        currentPct = case find (\h -> h.asset == target.asset) holdings of
+          Some h -> if totalValue > 0.0 then (h.valueCc / totalValue) * 100.0 else 0.0
+          None -> 0.0
+        diff = currentPct - target.targetPct
+      in if diff >= 0.0 then diff else negate diff
+    drifts = map getDrift targets
+  in foldl (\acc d -> if d > acc then d else acc) 0.0 drifts
+
+-- | Determine reward tier from monthly TX count
+getTier : Int -> RewardTier
+getTier txCount
+  | txCount <= 50  = Bronze
+  | txCount <= 200 = Silver
+  | txCount <= 500 = Gold
+  | otherwise      = Platinum
+
+-- | Validate that target allocations sum to 100%
+validateTargets : [TargetAllocation] -> Bool
+validateTargets targets =
+  let total = foldl (\acc t -> acc + t.targetPct) 0.0 targets
+  in total >= 99.9 && total <= 100.1  -- small tolerance for rounding
+

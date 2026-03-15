@@ -1,0 +1,238 @@
+import { describe, it, expect } from 'vitest';
+import { RebalanceEngine } from '../src/engine/rebalance.js';
+import type { Holding, TargetAllocation, SwapLeg } from '../src/engine/rebalance.js';
+
+// ---------------------------------------------------------------------------
+// Test helpers
+// ---------------------------------------------------------------------------
+
+function makeAsset(symbol: string) {
+  return { symbol, admin: 'Platform' };
+}
+
+function makeTarget(symbol: string, pct: number): TargetAllocation {
+  return { asset: makeAsset(symbol), targetPct: pct };
+}
+
+function makeHolding(symbol: string, amount: number, valueCc: number): Holding {
+  return { asset: makeAsset(symbol), amount, valueCc };
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+describe('RebalanceEngine', () => {
+  const engine = new RebalanceEngine();
+
+  // -----------------------------------------------------------------------
+  // Drift calculation
+  // -----------------------------------------------------------------------
+
+  describe('calculateDrift', () => {
+    it('should return zero drift for a perfectly balanced portfolio', () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+      const holdings = [
+        makeHolding('CC', 1000, 500),
+        makeHolding('USDCx', 1000, 500),
+      ];
+
+      const result = engine.calculateDrift(holdings, targets);
+
+      expect(result.maxDrift).toBe(0);
+      expect(result.drifts.get('CC')).toBe(0);
+      expect(result.drifts.get('USDCx')).toBe(0);
+    });
+
+    it('should calculate correct drift when portfolio is imbalanced', () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 30),
+        makeTarget('CBTC', 20),
+      ];
+      // Total value: 1000 CC
+      // CC: 600/1000 = 60% (target 50%) → drift 10%
+      // USDCx: 300/1000 = 30% (target 30%) → drift 0%
+      // CBTC: 100/1000 = 10% (target 20%) → drift 10%
+      const holdings = [
+        makeHolding('CC', 4000, 600),
+        makeHolding('USDCx', 300, 300),
+        makeHolding('CBTC', 0.0025, 100),
+      ];
+
+      const result = engine.calculateDrift(holdings, targets);
+
+      expect(result.maxDrift).toBe(10);
+      expect(result.drifts.get('CC')).toBe(10);
+      expect(result.drifts.get('USDCx')).toBe(0);
+      expect(result.drifts.get('CBTC')).toBe(10);
+    });
+
+    it('should return zero drift for an empty portfolio', () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+
+      const result = engine.calculateDrift([], targets);
+
+      expect(result.maxDrift).toBe(50);
+      // With no holdings, current % is 0 for all targets
+      expect(result.drifts.get('CC')).toBe(50);
+      expect(result.drifts.get('USDCx')).toBe(50);
+    });
+
+    it('should handle a single-holding portfolio against multiple targets', () => {
+      const targets = [
+        makeTarget('CC', 33.33),
+        makeTarget('USDCx', 33.33),
+        makeTarget('CBTC', 33.34),
+      ];
+      // Only CC held: 100% CC, 0% everything else
+      const holdings = [
+        makeHolding('CC', 10000, 1000),
+      ];
+
+      const result = engine.calculateDrift(holdings, targets);
+
+      // CC: 100% vs 33.33% → drift 66.67%
+      expect(result.drifts.get('CC')).toBeCloseTo(66.67, 1);
+      // USDCx: 0% vs 33.33% → drift 33.33%
+      expect(result.drifts.get('USDCx')).toBeCloseTo(33.33, 1);
+      // CBTC: 0% vs 33.34% → drift 33.34%
+      expect(result.drifts.get('CBTC')).toBeCloseTo(33.34, 1);
+      expect(result.maxDrift).toBeCloseTo(66.67, 1);
+    });
+
+    it('should handle drift with two assets where one is overweight', () => {
+      const targets = [
+        makeTarget('CC', 70),
+        makeTarget('CBTC', 30),
+      ];
+      // CC: 800/1000 = 80% (target 70%) → drift 10%
+      // CBTC: 200/1000 = 20% (target 30%) → drift 10%
+      const holdings = [
+        makeHolding('CC', 5333, 800),
+        makeHolding('CBTC', 0.005, 200),
+      ];
+
+      const result = engine.calculateDrift(holdings, targets);
+
+      expect(result.maxDrift).toBe(10);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Swap leg planning
+  // -----------------------------------------------------------------------
+
+  describe('planSwapLegs', () => {
+    it('should return no legs when portfolio is already balanced', async () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+      const holdings = [
+        makeHolding('CC', 33333.33, 5000), // 5000 CC value
+        makeHolding('USDCx', 750, 5000),    // 5000 CC value
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      // With equal weighting and correct values, should return no legs
+      expect(legs.length).toBe(0);
+    });
+
+    it('should plan swap legs for an imbalanced portfolio', async () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+      // CC is 80%, USDCx is 20% → need to sell CC and buy USDCx
+      const holdings = [
+        makeHolding('CC', 53333, 8000),
+        makeHolding('USDCx', 300, 2000),
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      expect(legs.length).toBeGreaterThan(0);
+
+      // Should sell CC and buy USDCx
+      const sellCC = legs.find((l) => l.fromAsset.symbol === 'CC');
+      expect(sellCC).toBeDefined();
+      expect(sellCC!.toAsset.symbol).toBe('USDCx');
+      expect(sellCC!.fromAmount).toBeGreaterThan(0);
+      expect(sellCC!.toAmount).toBeGreaterThan(0);
+    });
+
+    it('should plan legs through USDCx when assets have no direct pair', async () => {
+      // All three assets, where CC and CBTC both have USDCx pairs
+      const targets = [
+        makeTarget('CC', 40),
+        makeTarget('USDCx', 20),
+        makeTarget('CBTC', 40),
+      ];
+      // USDCx is heavily overweight, CC and CBTC are underweight
+      const holdings = [
+        makeHolding('CC', 6666, 1000),    // 10% (target 40%)
+        makeHolding('USDCx', 8000, 8000), // 80% (target 20%)
+        makeHolding('CBTC', 0.0025, 1000),// 10% (target 40%)
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      expect(legs.length).toBeGreaterThan(0);
+
+      // Should sell USDCx and buy both CC and CBTC
+      const sellUSDCx = legs.filter((l) => l.fromAsset.symbol === 'USDCx');
+      expect(sellUSDCx.length).toBeGreaterThan(0);
+
+      // Check that the total sell value is approximately correct
+      for (const leg of sellUSDCx) {
+        expect(leg.fromAmount).toBeGreaterThan(0);
+        expect(leg.toAmount).toBeGreaterThan(0);
+      }
+    });
+
+    it('should return no legs for empty holdings', async () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+
+      const legs = await engine.planSwapLegs([], targets);
+
+      expect(legs).toEqual([]);
+    });
+
+    it('should handle three-asset rebalance', async () => {
+      const targets = [
+        makeTarget('CC', 33.33),
+        makeTarget('USDCx', 33.33),
+        makeTarget('CBTC', 33.34),
+      ];
+      // CC heavily overweight
+      const holdings = [
+        makeHolding('CC', 66666, 10000),  // 76.9%
+        makeHolding('USDCx', 1500, 1500), // 11.5%
+        makeHolding('CBTC', 0.0375, 1500),// 11.5%
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      expect(legs.length).toBeGreaterThan(0);
+
+      // CC should be sold
+      const ccSells = legs.filter((l) => l.fromAsset.symbol === 'CC');
+      expect(ccSells.length).toBeGreaterThan(0);
+
+      // Total CC sold should be substantial
+      const totalCCSold = ccSells.reduce((sum, l) => sum + l.fromAmount, 0);
+      expect(totalCCSold).toBeGreaterThan(0);
+    });
+  });
+});

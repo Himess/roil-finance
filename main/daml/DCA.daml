@@ -1,0 +1,144 @@
+-- | Dollar Cost Averaging (DCA) schedule contracts
+-- Users set up recurring purchases of specific assets at fixed intervals.
+-- Each DCA execution generates a TX → contributes to App Rewards.
+module DCA where
+
+import Types
+
+-- | DCA schedule — defines a recurring purchase plan
+template DCASchedule
+  with
+    platform       : Party
+    user           : Party
+    sourceAsset    : AssetId      -- asset to sell (e.g., USDCx)
+    targetAsset    : AssetId      -- asset to buy (e.g., CBTC)
+    amountPerBuy   : Decimal      -- amount of sourceAsset per execution
+    frequency      : DCAFrequency
+    totalExecutions : Int         -- how many times DCA has executed
+    isActive       : Bool
+    createdAt      : Text         -- ISO timestamp
+  where
+    signatory platform
+    observer user
+    ensure amountPerBuy > 0.0
+
+    -- Execute a single DCA buy
+    -- Called by backend/trigger on schedule
+    choice ExecuteDCA : (ContractId DCASchedule, ContractId DCAExecution)
+      controller platform
+      do
+        assertMsg "DCA schedule is not active" isActive
+        let newSchedule = this with totalExecutions = totalExecutions + 1
+        scheduleCid <- create newSchedule
+        executionCid <- create DCAExecution with
+          platform
+          user
+          sourceAsset
+          targetAsset
+          sourceAmount = amountPerBuy
+          targetAmount = 0.0       -- filled after swap
+          executionNumber = totalExecutions + 1
+          status = Pending
+          executedAt = "pending"
+        pure (scheduleCid, executionCid)
+
+    -- User updates the DCA amount
+    choice UpdateDCAAmount : ContractId DCASchedule
+      with
+        newAmount : Decimal
+      controller user
+      do
+        assertMsg "Amount must be positive" (newAmount > 0.0)
+        create this with amountPerBuy = newAmount
+
+    -- User changes DCA frequency
+    choice UpdateDCAFrequency : ContractId DCASchedule
+      with
+        newFrequency : DCAFrequency
+      controller user
+      do
+        create this with frequency = newFrequency
+
+    -- User pauses DCA
+    choice PauseDCA : ContractId DCASchedule
+      controller user
+      do
+        create this with isActive = False
+
+    -- User resumes DCA
+    choice ResumeDCA : ContractId DCASchedule
+      controller user
+      do
+        create this with isActive = True
+
+    -- User cancels DCA (archives the contract)
+    choice CancelDCA : ()
+      controller user
+      do pure ()
+
+-- | Record of a single DCA execution
+template DCAExecution
+  with
+    platform        : Party
+    user            : Party
+    sourceAsset     : AssetId
+    targetAsset     : AssetId
+    sourceAmount    : Decimal     -- amount of source sold
+    targetAmount    : Decimal     -- amount of target received
+    executionNumber : Int
+    status          : RebalanceStatus
+    executedAt      : Text
+  where
+    signatory platform
+    observer user
+
+    -- Platform fills in the execution result after Cantex swap
+    choice CompleteDCAExecution : ContractId DCALog
+      with
+        receivedAmount : Decimal
+        completedAt    : Text
+      controller platform
+      do
+        logCid <- create DCALog with
+          platform
+          user
+          sourceAsset
+          targetAsset
+          sourceAmount
+          targetAmount = receivedAmount
+          executionNumber
+          timestamp = completedAt
+
+        -- FEATURED APP REWARDS INTEGRATION POINT:
+        -- After a successful DCA execution, the backend should call
+        -- FeaturedAppConfig.RecordActivity with:
+        --   activityType = DCAExecution
+        --   description  = "DCA #<N>: <sourceAmount> <source> -> <target>"
+        -- On the real Canton Network, this will exercise
+        -- FeaturedAppRight_CreateActivityMarker to generate an
+        -- AppRewardCoupon, earning CC rewards for the platform.
+
+        pure logCid
+
+    -- Platform marks execution as failed
+    choice FailDCAExecution : ContractId DCAExecution
+      with
+        reason : Text
+      controller platform
+      do
+        create this with status = Failed reason
+
+-- | Immutable log of a completed DCA execution
+template DCALog
+  with
+    platform        : Party
+    user            : Party
+    sourceAsset     : AssetId
+    targetAsset     : AssetId
+    sourceAmount    : Decimal
+    targetAmount    : Decimal
+    executionNumber : Int
+    timestamp       : Text
+  where
+    signatory platform
+    observer user
