@@ -5,6 +5,7 @@ import { portfolioRouter } from './routes/portfolio.js';
 import { dcaRouter } from './routes/dca.js';
 import { rewardsRouter } from './routes/rewards.js';
 import { marketRouter } from './routes/market.js';
+import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
 
 // ---------------------------------------------------------------------------
 // App factory
@@ -23,8 +24,12 @@ export function createApp(): express.Express {
   // Middleware
   // -----------------------------------------------------------------------
 
+  app.use(securityHeaders);
+  app.use(rateLimiter);
+  app.use(requestSizeLimiter());
   app.use(cors());
   app.use(express.json());
+  app.use(sanitizeInput);
 
   // Request logging
   app.use((req: Request, _res: Response, next: NextFunction) => {
