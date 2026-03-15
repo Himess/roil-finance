@@ -1,6 +1,9 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import { config } from './config.js';
+import { withRetry } from './utils/retry.js';
+import { ledgerBreaker } from './utils/circuit-breaker.js';
+import { LedgerError } from './utils/errors.js';
 
 // ---------------------------------------------------------------------------
 // Types — Canton JSON Ledger API v2
@@ -111,36 +114,66 @@ export class DamlLedger {
   // -----------------------------------------------------------------------
 
   private async post<T>(path: string, body: unknown, actAs: string[], readAs?: string[]): Promise<T> {
-    const token = buildJwt(actAs, readAs ?? actAs);
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(body),
-    });
+    return ledgerBreaker.execute(() =>
+      withRetry(
+        async () => {
+          const token = buildJwt(actAs, readAs ?? actAs);
+          const res = await fetch(`${this.baseUrl}${path}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify(body),
+          });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Ledger API ${path} failed (${res.status}): ${text}`);
-    }
+          if (!res.ok) {
+            const text = await res.text();
+            throw new LedgerError(
+              `Ledger API ${path} failed (${res.status}): ${text}`,
+              res.status,
+            );
+          }
 
-    return res.json() as Promise<T>;
+          return res.json() as Promise<T>;
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 500,
+          maxDelayMs: 5000,
+          retryableErrors: ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'fetch failed', '502', '503', '504'],
+        },
+      ),
+    );
   }
 
   private async get<T>(path: string, actAs: string[]): Promise<T> {
-    const token = buildJwt(actAs, actAs);
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
+    return ledgerBreaker.execute(() =>
+      withRetry(
+        async () => {
+          const token = buildJwt(actAs, actAs);
+          const res = await fetch(`${this.baseUrl}${path}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`Ledger API GET ${path} failed (${res.status}): ${text}`);
-    }
+          if (!res.ok) {
+            const text = await res.text();
+            throw new LedgerError(
+              `Ledger API GET ${path} failed (${res.status}): ${text}`,
+              res.status,
+            );
+          }
 
-    return res.json() as Promise<T>;
+          return res.json() as Promise<T>;
+        },
+        {
+          maxRetries: 3,
+          baseDelayMs: 500,
+          maxDelayMs: 5000,
+          retryableErrors: ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'fetch failed', '502', '503', '504'],
+        },
+      ),
+    );
   }
 
   // -----------------------------------------------------------------------
@@ -261,21 +294,36 @@ export class DamlLedger {
    * Upload a DAR file to the participant node.
    */
   async uploadDar(darPath: string, actAs: string[]): Promise<void> {
-    const darContent = fs.readFileSync(darPath);
-    const token = buildJwt(actAs, actAs);
-    const res = await fetch(`${this.baseUrl}/v2/packages`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/octet-stream',
-        Authorization: `Bearer ${token}`,
-      },
-      body: darContent,
-    });
+    await ledgerBreaker.execute(() =>
+      withRetry(
+        async () => {
+          const darContent = fs.readFileSync(darPath);
+          const token = buildJwt(actAs, actAs);
+          const res = await fetch(`${this.baseUrl}/v2/packages`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/octet-stream',
+              Authorization: `Bearer ${token}`,
+            },
+            body: darContent,
+          });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`DAR upload failed (${res.status}): ${text}`);
-    }
+          if (!res.ok) {
+            const text = await res.text();
+            throw new LedgerError(
+              `DAR upload failed (${res.status}): ${text}`,
+              res.status,
+            );
+          }
+        },
+        {
+          maxRetries: 2,
+          baseDelayMs: 1000,
+          maxDelayMs: 5000,
+          retryableErrors: ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'fetch failed', '502', '503', '504'],
+        },
+      ),
+    );
   }
 
   /**

@@ -5,7 +5,13 @@ import { portfolioRouter } from './routes/portfolio.js';
 import { dcaRouter } from './routes/dca.js';
 import { rewardsRouter } from './routes/rewards.js';
 import { marketRouter } from './routes/market.js';
+import { compoundRouter } from './routes/compound.js';
+import { transfersRouter } from './routes/transfers.js';
+import { metricsRouter } from './routes/metrics.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
+import { metricsMiddleware } from './middleware/metrics-middleware.js';
+import { logger } from './monitoring/logger.js';
+import { globalErrorHandler } from './middleware/error-handler.js';
 
 // ---------------------------------------------------------------------------
 // App factory
@@ -31,15 +37,22 @@ export function createApp(): express.Express {
   app.use(express.json());
   app.use(sanitizeInput);
 
+  // Metrics collection (before request logging so it captures all requests)
+  app.use(metricsMiddleware);
+
   // Request logging
   app.use((req: Request, _res: Response, next: NextFunction) => {
     const start = Date.now();
-    const originalEnd = _res.end;
 
     // Log after response
     _res.on('finish', () => {
       const duration = Date.now() - start;
-      console.log(`${req.method} ${req.url} ${_res.statusCode} ${duration}ms`);
+      logger.info(`${req.method} ${req.url} ${_res.statusCode} ${duration}ms`, {
+        method: req.method,
+        url: req.url,
+        status: _res.statusCode,
+        durationMs: duration,
+      });
     });
 
     next();
@@ -53,6 +66,9 @@ export function createApp(): express.Express {
   app.use('/api/dca', dcaRouter);
   app.use('/api/rewards', rewardsRouter);
   app.use('/api/market', marketRouter);
+  app.use('/api/compound', compoundRouter);
+  app.use('/api/transfers', transfersRouter);
+  app.use('/metrics', metricsRouter);
 
   // Health check
   app.get('/health', (_req: Request, res: Response) => {
@@ -80,14 +96,8 @@ export function createApp(): express.Express {
     });
   });
 
-  // Global error handler
-  app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
-    console.error('[server] Unhandled error:', err);
-    res.status(500).json({
-      success: false,
-      error: process.env.NODE_ENV === 'production' ? 'Internal server error' : err.message,
-    });
-  });
+  // Global error handler (must be last — 4-parameter signature)
+  app.use(globalErrorHandler);
 
   return app;
 }

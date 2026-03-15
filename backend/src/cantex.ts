@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 import { config } from './config.js';
+import { withRetry } from './utils/retry.js';
+import { cantexBreaker } from './utils/circuit-breaker.js';
+import { CantexError } from './utils/errors.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -133,18 +136,18 @@ asyncio.run(main())
 
     proc.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error(`Cantex Python bridge failed (code ${code}): ${stderr}`));
+        reject(new CantexError(`Cantex Python bridge failed (code ${code}): ${stderr}`));
         return;
       }
       try {
         resolve(JSON.parse(stdout.trim()));
       } catch {
-        reject(new Error(`Cantex Python bridge returned invalid JSON: ${stdout}`));
+        reject(new CantexError(`Cantex Python bridge returned invalid JSON: ${stdout}`));
       }
     });
 
     proc.on('error', (err) => {
-      reject(new Error(`Cantex Python bridge spawn failed: ${err.message}`));
+      reject(new CantexError(`Cantex Python bridge spawn failed: ${err.message}`));
     });
   });
 }
@@ -183,13 +186,18 @@ export class CantexClient {
       return { fromAsset, toAsset, inputAmount: amount, outputAmount: output, price: rate, fee, slippage: 0 };
     }
 
-    const result = await callCantexPython('get_quote', {
-      amount,
-      sell_id: fromAsset,
-      sell_admin: this.getAdmin(fromAsset),
-      buy_id: toAsset,
-      buy_admin: this.getAdmin(toAsset),
-    }) as { price: number; output: number; fee: number };
+    const result = await cantexBreaker.execute(() =>
+      withRetry(
+        () => callCantexPython('get_quote', {
+          amount,
+          sell_id: fromAsset,
+          sell_admin: this.getAdmin(fromAsset),
+          buy_id: toAsset,
+          buy_admin: this.getAdmin(toAsset),
+        }),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
+      ),
+    ) as { price: number; output: number; fee: number };
 
     return {
       fromAsset, toAsset,
@@ -218,13 +226,18 @@ export class CantexClient {
       };
     }
 
-    const result = await callCantexPython('swap', {
-      amount,
-      sell_id: fromAsset,
-      sell_admin: this.getAdmin(fromAsset),
-      buy_id: toAsset,
-      buy_admin: this.getAdmin(toAsset),
-    }) as { tx_id: string };
+    const result = await cantexBreaker.execute(() =>
+      withRetry(
+        () => callCantexPython('swap', {
+          amount,
+          sell_id: fromAsset,
+          sell_admin: this.getAdmin(fromAsset),
+          buy_id: toAsset,
+          buy_admin: this.getAdmin(toAsset),
+        }),
+        { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 5000 },
+      ),
+    ) as { tx_id: string };
 
     // Re-query to get the exact output amount
     const quote = await this.getQuote(fromAsset, toAsset, amount);
@@ -252,7 +265,12 @@ export class CantexClient {
       ];
     }
 
-    return await callCantexPython('get_account', {}) as Balance[];
+    return await cantexBreaker.execute(() =>
+      withRetry(
+        () => callCantexPython('get_account', {}),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
+      ),
+    ) as Balance[];
   }
 
   // -----------------------------------------------------------------------
@@ -267,7 +285,12 @@ export class CantexClient {
       ];
     }
 
-    return await callCantexPython('get_pools', {}) as PoolInfo[];
+    return await cantexBreaker.execute(() =>
+      withRetry(
+        () => callCantexPython('get_pools', {}),
+        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
+      ),
+    ) as PoolInfo[];
   }
 
   // -----------------------------------------------------------------------

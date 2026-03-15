@@ -4,6 +4,10 @@ import { createApp } from './server.js';
 import { rebalanceEngine } from './engine/rebalance.js';
 import { dcaEngine } from './engine/dca.js';
 import { rewardsEngine } from './engine/rewards.js';
+import { compoundEngine } from './engine/compound.js';
+import { priceOracle } from './services/price-oracle.js';
+import { logger } from './monitoring/logger.js';
+import { metrics, METRICS } from './monitoring/metrics.js';
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -17,33 +21,66 @@ const app = createApp();
 
 // DCA execution + auto-rebalance check
 cron.schedule(config.dcaCronSchedule, async () => {
-  console.log(`[cron] Running DCA + auto-rebalance check at ${new Date().toISOString()}`);
+  logger.info('Running DCA + auto-rebalance check', { component: 'cron' });
 
   try {
     // Execute due DCA schedules
     const dcaResult = await dcaEngine.executeDueSchedules();
-    console.log(`[cron] DCA: ${dcaResult.executed} executed, ${dcaResult.failed} failed`);
+    metrics.increment(METRICS.dcaExecuted, {}, dcaResult.executed);
+    logger.info(`DCA: ${dcaResult.executed} executed, ${dcaResult.failed} failed`, {
+      component: 'cron',
+      executed: dcaResult.executed,
+      failed: dcaResult.failed,
+    });
   } catch (err) {
-    console.error('[cron] DCA execution error:', err);
+    logger.error('DCA execution error', {
+      component: 'cron',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   try {
     // Check and auto-rebalance portfolios exceeding drift threshold
     await rebalanceEngine.checkAndAutoRebalance();
   } catch (err) {
-    console.error('[cron] Auto-rebalance error:', err);
+    logger.error('Auto-rebalance error', {
+      component: 'cron',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 });
 
 // Monthly reward distribution — runs at 00:05 on the 1st of each month
 cron.schedule('5 0 1 * *', async () => {
-  console.log(`[cron] Running monthly reward distribution at ${new Date().toISOString()}`);
+  logger.info('Running monthly reward distribution', { component: 'cron' });
 
   try {
     const result = await rewardsEngine.distributeMonthlyRewards();
-    console.log(`[cron] Rewards: ${result.distributed} distributed, ${result.failed} failed`);
+    metrics.increment(METRICS.rewardDistributed, {}, result.distributed);
+    logger.info(`Rewards: ${result.distributed} distributed, ${result.failed} failed`, {
+      component: 'cron',
+      distributed: result.distributed,
+      failed: result.failed,
+    });
   } catch (err) {
-    console.error('[cron] Reward distribution error:', err);
+    logger.error('Reward distribution error', {
+      component: 'cron',
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+});
+
+// Auto-compound check — runs every hour
+cron.schedule('0 * * * *', async () => {
+  logger.info('Running auto-compound check', { component: 'cron' });
+
+  try {
+    await compoundEngine.checkAndCompoundAll();
+  } catch (err) {
+    logger.error('Auto-compound error', {
+      component: 'cron',
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 });
 
@@ -52,15 +89,20 @@ cron.schedule('5 0 1 * *', async () => {
 // ---------------------------------------------------------------------------
 
 app.listen(config.port, () => {
-  console.log(`
-  ============================================
-   Canton Private Rebalancer — Backend
-  ============================================
-   Port:         ${config.port}
-   JSON API:     ${config.jsonApiUrl}
-   Platform:     ${config.platformParty}
-   Cantex API:   ${config.cantexApiUrl}
-   DCA Cron:     ${config.dcaCronSchedule}
-  ============================================
-  `);
+  // Startup gauges
+  metrics.setGauge(METRICS.activePortfolios, 0);
+  metrics.setGauge(METRICS.activeDcaSchedules, 0);
+  metrics.setGauge(METRICS.circuitBreakerState, 0); // 0 = closed (healthy)
+
+  // Start price oracle polling (every 30 seconds)
+  priceOracle.startPolling(30_000);
+
+  logger.info('Canton Private Rebalancer backend started', {
+    port: config.port,
+    jsonApiUrl: config.jsonApiUrl,
+    platformParty: config.platformParty,
+    cantexApiUrl: config.cantexApiUrl,
+    dcaCron: config.dcaCronSchedule,
+    priceOraclePolling: '30s',
+  });
 });

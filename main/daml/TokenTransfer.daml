@@ -1,0 +1,112 @@
+-- | CIP-0056 Token Standard integration for the Canton Private Rebalancer.
+-- Wraps token transfer and swap operations so the rebalancer can move
+-- real tokens (CC, USDCx, CBTC) on the Canton Network.
+module TokenTransfer where
+
+-- | Represents a token holding (mirrors CIP-0056 Holding view)
+data TokenHolding = TokenHolding
+  with
+    owner : Party
+    instrumentId : Text      -- e.g., "CC", "USDCx", "CBTC"
+    instrumentAdmin : Party  -- token issuer/admin
+    amount : Decimal
+  deriving (Eq, Show)
+
+-- | Status of a transfer or swap
+data TransferStatus = Pending | Completed | Rejected | Cancelled
+  deriving (Eq, Show)
+
+-- | Transfer request between parties
+template TransferRequest
+  with
+    platform : Party
+    sender : Party
+    receiver : Party
+    instrumentId : Text
+    instrumentAdmin : Party
+    amount : Decimal
+    status : TransferStatus
+    memo : Text
+    createdAt : Text
+  where
+    signatory platform, sender
+    observer receiver
+
+    choice ApproveTransfer : ContractId TransferLog
+      controller receiver
+      do
+        create TransferLog with
+          platform; sender; receiver; instrumentId
+          instrumentAdmin; amount; memo
+          completedAt = createdAt  -- would be actual time in production
+
+    choice RejectTransfer : ContractId TransferRequest
+      controller receiver
+      do create this with status = Rejected
+
+    choice WithdrawTransfer : ()
+      controller sender
+      do pure ()
+
+-- | Atomic swap request (DvP) for rebalancing.
+-- Two legs: sell one asset, buy another.
+template SwapRequest
+  with
+    platform : Party
+    user : Party
+    sellAsset : Text
+    sellAdmin : Party
+    sellAmount : Decimal
+    buyAsset : Text
+    buyAdmin : Party
+    buyAmount : Decimal      -- expected amount (from quote)
+    status : TransferStatus
+    createdAt : Text
+  where
+    signatory platform, user
+
+    -- Platform executes the swap (after Cantex confirmation)
+    choice ExecuteSwap : ContractId SwapLog
+      with
+        actualBuyAmount : Decimal
+        executedAt : Text
+      controller platform
+      do
+        create SwapLog with
+          platform; user
+          sellAsset; sellAmount
+          buyAsset; buyAmount = actualBuyAmount
+          timestamp = executedAt
+
+    choice CancelSwap : ()
+      controller user
+      do pure ()
+
+-- | Immutable transfer log
+template TransferLog
+  with
+    platform : Party
+    sender : Party
+    receiver : Party
+    instrumentId : Text
+    instrumentAdmin : Party
+    amount : Decimal
+    memo : Text
+    completedAt : Text
+  where
+    signatory platform
+    observer sender, receiver
+
+-- | Immutable swap log
+template SwapLog
+  with
+    platform : Party
+    user : Party
+    sellAsset : Text
+    sellAmount : Decimal
+    buyAsset : Text
+    buyAmount : Decimal
+    timestamp : Text
+  where
+    signatory platform
+    observer user

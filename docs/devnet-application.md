@@ -1,0 +1,86 @@
+# DevNet Application — Canton Rebalancer
+
+## Email Draft (to: operations@sync.global)
+
+**Subject:** DevNet Validator Sponsorship Request — Canton Rebalancer (Portfolio Management dApp)
+
+---
+
+Hi GSF Operations Team,
+
+We are building **Canton Rebalancer**, a privacy-preserving portfolio management platform on Canton Network. We would like to request DevNet access to test our application with real Canton infrastructure.
+
+### About the Application
+
+**Canton Rebalancer** is a Glider-style portfolio rebalancer that leverages Canton's sub-transaction privacy to offer:
+
+- **Private Portfolio Rebalancing** — Users set target allocations (CC, USDCx, CBTC), system auto-rebalances when drift exceeds threshold
+- **Dollar Cost Averaging (DCA)** — Recurring purchases at configurable intervals (hourly/daily/weekly/monthly)
+- **Auto-Compounding** — Automatic yield reinvestment from staking/lending/LP positions
+- **Reward Tiers** — TX-based loyalty system (Bronze→Platinum) with fee rebates
+
+### Technical Stack
+
+- **Smart Contracts:** Daml 3.4.11 (6 contract modules, 73+ tests)
+- **Backend:** TypeScript/Express with Canton JSON Ledger API v2
+- **Frontend:** React + Vite + Tailwind CSS
+- **DEX Integration:** Cantex SDK for swap execution
+- **Token Standard:** CIP-0056 compliant token transfers
+- **Featured App:** Activity marker integration ready (splice-api-featured-app-v1)
+
+### GitHub Repository
+
+https://github.com/Himess/canton-rebalancer (currently private, happy to grant access)
+
+### Why Canton?
+
+Portfolio composition and trading activity are sensitive data. Canton's sub-transaction privacy ensures that:
+- No one sees a user's portfolio allocation
+- Trade timing and sizes remain private
+- Rebalancing strategies are confidential
+
+This is impossible on transparent chains like Ethereum.
+
+### Transaction Volume Potential
+
+Each user generates multiple TXs per operation:
+- Rebalance: 3-5 swap TXs + ledger updates
+- DCA: 1-2 TXs per execution (hourly/daily)
+- Compound: 2-3 TXs per compound cycle
+- Rewards: 1 TX per recording + monthly distribution
+
+Conservative estimate: 500+ TXs/day per 100 active users.
+
+### Request
+
+- **DevNet validator sponsorship** (we can use GSF as sponsor)
+- **Static egress IP:** [will provide after VPS setup]
+- **Timeline:** Ready to deploy immediately after IP allowlisting
+
+### Contact
+
+[Your Name]
+[Your Email]
+GitHub: @Himess
+
+Thank you for considering our application.
+
+---
+
+## Checklist Before Sending
+
+- [ ] Set up VPS/cloud instance with static IP for validator node
+- [ ] Ensure Docker is running on the VPS
+- [ ] Prepare DAR file for deployment
+- [ ] Test full flow on LocalNet first
+- [ ] Make GitHub repo accessible to GSF team (or make public temporarily)
+
+## After Approval
+
+1. Receive sponsor URL from GSF
+2. Generate onboarding secret: `curl -X POST SPONSOR_URL/api/sv/v0/devnet/onboard/validator/prepare`
+3. Deploy validator: `./start.sh -s "SPONSOR_URL" -o "SECRET" -p "canton-rebalancer-1" -w`
+4. Upload DAR to participant
+5. Configure Cantex SDK with DevNet keys
+6. Update .env with DevNet config
+7. Test full flow with real tokens

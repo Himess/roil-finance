@@ -1,0 +1,320 @@
+-- | Tests for CIP-0056 Token Transfer integration templates
+module TestTokenTransfer where
+
+import Daml.Script
+import DA.List (head)
+import TokenTransfer
+
+-- | Test: Full transfer flow — create request, approve, verify log
+testTransferFlow : Script ()
+testTransferFlow = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  -- 1. Create a transfer request: Alice sends 500 USDCx to Bob
+  --    signatory platform, sender (alice) — need both authorizations
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform
+      sender = alice
+      receiver = bob
+      instrumentId = "USDCx"
+      instrumentAdmin = tokenAdmin
+      amount = 500.0
+      status = Pending
+      memo = "Payment for services"
+      createdAt = "2026-03-15T10:00:00Z"
+
+  -- 2. Bob approves the transfer
+  logCid <- submit bob do
+    exerciseCmd transferCid ApproveTransfer
+
+  -- 3. Verify transfer log was created and is visible to both parties
+  aliceLogs <- query @TransferLog alice
+  assertMsg "Alice should see 1 transfer log" (length aliceLogs == 1)
+
+  bobLogs <- query @TransferLog bob
+  assertMsg "Bob should see 1 transfer log" (length bobLogs == 1)
+
+  -- 4. Verify log contents
+  let (_, logPayload) = head aliceLogs
+  assertMsg "Log sender is Alice" (logPayload.sender == alice)
+  assertMsg "Log receiver is Bob" (logPayload.receiver == bob)
+  assertMsg "Log instrument is USDCx" (logPayload.instrumentId == "USDCx")
+  assertMsg "Log amount is 500" (logPayload.amount == 500.0)
+  assertMsg "Log memo matches" (logPayload.memo == "Payment for services")
+
+  pure ()
+
+-- | Test: Swap flow — create request, execute, verify log
+testSwapFlow : Script ()
+testSwapFlow = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  ccAdmin <- allocateParty "CCAdmin"
+  usdcxAdmin <- allocateParty "USDCxAdmin"
+
+  -- 1. Create a swap request: Alice sells 1000 CC, expects ~150 USDCx
+  --    signatory platform, user (alice) — need both authorizations
+  swapCid <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform
+      user = alice
+      sellAsset = "CC"
+      sellAdmin = ccAdmin
+      sellAmount = 1000.0
+      buyAsset = "USDCx"
+      buyAdmin = usdcxAdmin
+      buyAmount = 150.0
+      status = Pending
+      createdAt = "2026-03-15T11:00:00Z"
+
+  -- 2. Platform executes the swap (after Cantex confirmation)
+  logCid <- submit platform do
+    exerciseCmd swapCid ExecuteSwap with
+      actualBuyAmount = 149.5
+      executedAt = "2026-03-15T11:00:05Z"
+
+  -- 3. Verify swap log was created
+  aliceLogs <- query @SwapLog alice
+  assertMsg "Alice should see 1 swap log" (length aliceLogs == 1)
+
+  -- 4. Verify log contents
+  let (_, logPayload) = head aliceLogs
+  assertMsg "Log sell asset is CC" (logPayload.sellAsset == "CC")
+  assertMsg "Log sell amount is 1000" (logPayload.sellAmount == 1000.0)
+  assertMsg "Log buy asset is USDCx" (logPayload.buyAsset == "USDCx")
+  assertMsg "Log buy amount is 149.5" (logPayload.buyAmount == 149.5)
+  assertMsg "Log user is Alice" (logPayload.user == alice)
+
+  pure ()
+
+-- | Test: Reject transfer — create request, reject, verify status
+testRejectTransfer : Script ()
+testRejectTransfer = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  -- 1. Create a transfer request
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform
+      sender = alice
+      receiver = bob
+      instrumentId = "CBTC"
+      instrumentAdmin = tokenAdmin
+      amount = 0.1
+      status = Pending
+      memo = "Attempted transfer"
+      createdAt = "2026-03-15T12:00:00Z"
+
+  -- 2. Bob rejects the transfer
+  rejectedCid <- submit bob do
+    exerciseCmd transferCid RejectTransfer
+
+  -- 3. Verify the rejected request exists with Rejected status
+  requests <- query @TransferRequest alice
+  assertMsg "Alice should see 1 transfer request" (length requests == 1)
+
+  let (_, reqPayload) = head requests
+  assertMsg "Status should be Rejected" (reqPayload.status == Rejected)
+
+  -- 4. Verify no transfer log was created (transfer was rejected)
+  logs <- query @TransferLog alice
+  assertMsg "Should have 0 transfer logs" (length logs == 0)
+
+  pure ()
+
+-- | Test: Withdraw transfer — sender cancels before approval
+testWithdrawTransfer : Script ()
+testWithdrawTransfer = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  -- 1. Create a transfer request
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform
+      sender = alice
+      receiver = bob
+      instrumentId = "CC"
+      instrumentAdmin = tokenAdmin
+      amount = 2000.0
+      status = Pending
+      memo = "Will cancel this"
+      createdAt = "2026-03-15T13:00:00Z"
+
+  -- 2. Alice (sender) withdraws the transfer
+  submit alice do
+    exerciseCmd transferCid WithdrawTransfer
+
+  -- 3. Verify the request is archived (no active contracts)
+  requests <- query @TransferRequest alice
+  assertMsg "Should have 0 transfer requests after withdrawal" (length requests == 0)
+
+  pure ()
+
+-- | Test: Cancel swap — user cancels before execution
+testCancelSwap : Script ()
+testCancelSwap = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  ccAdmin <- allocateParty "CCAdmin"
+  cbtcAdmin <- allocateParty "CBTCAdmin"
+
+  -- 1. Create a swap request
+  swapCid <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform
+      user = alice
+      sellAsset = "CC"
+      sellAdmin = ccAdmin
+      sellAmount = 5000.0
+      buyAsset = "CBTC"
+      buyAdmin = cbtcAdmin
+      buyAmount = 0.02
+      status = Pending
+      createdAt = "2026-03-15T14:00:00Z"
+
+  -- 2. Alice cancels the swap
+  submit alice do
+    exerciseCmd swapCid CancelSwap
+
+  -- 3. Verify the swap request is archived
+  requests <- query @SwapRequest alice
+  assertMsg "Should have 0 swap requests after cancellation" (length requests == 0)
+
+  -- 4. Verify no swap log was created
+  logs <- query @SwapLog alice
+  assertMsg "Should have 0 swap logs" (length logs == 0)
+
+  pure ()
+
+-- | Test: Multiple transfers and swaps — verify history
+testMultipleOperations : Script ()
+testMultipleOperations = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  -- 1. Create and approve transfer 1: 100 CC
+  t1 <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform; sender = alice; receiver = bob
+      instrumentId = "CC"; instrumentAdmin = tokenAdmin
+      amount = 100.0; status = Pending
+      memo = "Transfer 1"; createdAt = "2026-03-15T10:00:00Z"
+  submit bob do exerciseCmd t1 ApproveTransfer
+
+  -- 2. Create and approve transfer 2: 200 USDCx
+  t2 <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform; sender = alice; receiver = bob
+      instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
+      amount = 200.0; status = Pending
+      memo = "Transfer 2"; createdAt = "2026-03-15T11:00:00Z"
+  submit bob do exerciseCmd t2 ApproveTransfer
+
+  -- 3. Execute a swap: 500 CC -> USDCx
+  s1 <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform; user = alice
+      sellAsset = "CC"; sellAdmin = tokenAdmin; sellAmount = 500.0
+      buyAsset = "USDCx"; buyAdmin = tokenAdmin; buyAmount = 75.0
+      status = Pending; createdAt = "2026-03-15T12:00:00Z"
+  submit platform do
+    exerciseCmd s1 ExecuteSwap with
+      actualBuyAmount = 74.5
+      executedAt = "2026-03-15T12:00:05Z"
+
+  -- 4. Verify Alice sees 2 transfer logs and 1 swap log
+  transferLogs <- query @TransferLog alice
+  assertMsg "Alice should see 2 transfer logs" (length transferLogs == 2)
+
+  swapLogs <- query @SwapLog alice
+  assertMsg "Alice should see 1 swap log" (length swapLogs == 1)
+
+  -- 5. Verify Bob sees 2 transfer logs (as receiver)
+  bobLogs <- query @TransferLog bob
+  assertMsg "Bob should see 2 transfer logs" (length bobLogs == 2)
+
+  pure ()
+
+-- | Test: Only authorized parties can exercise choices
+testAuthorization : Script ()
+testAuthorization = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  charlie <- allocateParty "Charlie"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  -- Create a transfer request from Alice to Bob
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform; sender = alice; receiver = bob
+      instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
+      amount = 100.0; status = Pending
+      memo = "Auth test"; createdAt = "2026-03-15T15:00:00Z"
+
+  -- Charlie (not receiver) should NOT be able to approve
+  submitMustFail charlie do
+    exerciseCmd transferCid ApproveTransfer
+
+  -- Charlie should NOT be able to reject either
+  submitMustFail charlie do
+    exerciseCmd transferCid RejectTransfer
+
+  -- Charlie should NOT be able to withdraw (not sender)
+  submitMustFail charlie do
+    exerciseCmd transferCid WithdrawTransfer
+
+  -- Bob (receiver) can approve
+  submit bob do exerciseCmd transferCid ApproveTransfer
+
+  pure ()
+
+-- | Test: Swap with CBTC (high-value, low-quantity asset)
+testCBTCSwap : Script ()
+testCBTCSwap = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  usdcxAdmin <- allocateParty "USDCxAdmin"
+  cbtcAdmin <- allocateParty "CBTCAdmin"
+
+  -- Swap USDCx for CBTC (buy 0.001 BTC with ~40 USDCx)
+  swapCid <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform; user = alice
+      sellAsset = "USDCx"; sellAdmin = usdcxAdmin; sellAmount = 40.0
+      buyAsset = "CBTC"; buyAdmin = cbtcAdmin; buyAmount = 0.001
+      status = Pending; createdAt = "2026-03-15T16:00:00Z"
+
+  logCid <- submit platform do
+    exerciseCmd swapCid ExecuteSwap with
+      actualBuyAmount = 0.00098
+      executedAt = "2026-03-15T16:00:10Z"
+
+  logs <- query @SwapLog alice
+  assertMsg "Should have 1 CBTC swap log" (length logs == 1)
+
+  let (_, log) = head logs
+  assertMsg "Buy asset is CBTC" (log.buyAsset == "CBTC")
+  assertMsg "Actual buy amount is 0.00098" (log.buyAmount == 0.00098)
+
+  pure ()

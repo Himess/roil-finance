@@ -5,6 +5,7 @@ import {
   BarChart3,
   Trophy,
   RefreshCw,
+  Wallet,
 } from 'lucide-react';
 import StatsCard from '@/components/StatsCard';
 import AllocationChart from '@/components/AllocationChart';
@@ -15,7 +16,8 @@ import { usePortfolio, useDrift, useRebalanceHistory, useRebalance } from '@/hoo
 import { useRewards } from '@/hooks/useRewards';
 import { useDCAHistory } from '@/hooks/useDCA';
 import { useParty } from '@/context/PartyContext';
-import type { ActivityEntry, TargetAllocation, TriggerMode } from '@/types';
+import { useWallet } from '@/hooks/useWallet';
+import type { ActivityEntry, Holding, TargetAllocation, TriggerMode } from '@/types';
 
 export default function Dashboard() {
   const { party } = useParty();
@@ -27,6 +29,22 @@ export default function Dashboard() {
   const rebalanceMutation = useRebalance();
   const [isRebalancing, setIsRebalancing] = useState(false);
 
+  // Wallet state — used to overlay real balances when available
+  const { connected: walletConnected, balances: walletBalances } = useWallet();
+
+  // Build effective holdings: prefer wallet balances when connected and non-empty,
+  // otherwise fall back to portfolio (backend/demo) holdings.
+  const effectiveHoldings: Holding[] = useMemo(() => {
+    if (walletConnected && walletBalances.length > 0) {
+      return walletBalances.map((wb) => ({
+        asset: { symbol: wb.instrumentId, admin: 'Canton::Admin' },
+        amount: wb.amount,
+        valueCc: wb.amount, // 1:1 in CC terms by default
+      }));
+    }
+    return portfolio.holdings;
+  }, [walletConnected, walletBalances, portfolio.holdings]);
+
   // Merge and sort all activities
   const allActivities: ActivityEntry[] = useMemo(() => {
     const merged = [...rebalActivities, ...dcaActivities];
@@ -37,10 +55,10 @@ export default function Dashboard() {
     return merged;
   }, [rebalActivities, dcaActivities]);
 
-  // Calculate total portfolio value
+  // Calculate total portfolio value from effective holdings
   const totalValue = useMemo(
-    () => portfolio.holdings.reduce((acc, h) => acc + h.valueCc, 0),
-    [portfolio.holdings],
+    () => effectiveHoldings.reduce((acc, h) => acc + h.valueCc, 0),
+    [effectiveHoldings],
   );
 
   // Monthly TX count from all activity
@@ -78,6 +96,9 @@ export default function Dashboard() {
       : null;
   const showRebalanceBtn = threshold !== null ? drift >= threshold : true;
 
+  // Are we showing wallet-sourced data?
+  const usingWalletBalances = walletConnected && walletBalances.length > 0;
+
   return (
     <div className="space-y-6">
       {/* Page header */}
@@ -105,6 +126,25 @@ export default function Dashboard() {
           </button>
         )}
       </div>
+
+      {/* Wallet balance hint */}
+      {!walletConnected && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-slate-800/50 border border-slate-700 rounded-lg">
+          <Wallet className="w-4 h-4 text-slate-500 shrink-0" />
+          <p className="text-xs text-slate-400">
+            Connect your wallet to see real balances. Currently showing demo data.
+          </p>
+        </div>
+      )}
+
+      {usingWalletBalances && (
+        <div className="flex items-center gap-2 px-4 py-3 bg-green-500/10 border border-green-500/20 rounded-lg">
+          <Wallet className="w-4 h-4 text-green-400 shrink-0" />
+          <p className="text-xs text-green-300">
+            Showing live balances from your connected wallet.
+          </p>
+        </div>
+      )}
 
       {/* Stats cards row */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -143,7 +183,7 @@ export default function Dashboard() {
       {/* Charts row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <AllocationChart
-          holdings={portfolio.holdings}
+          holdings={effectiveHoldings}
           targets={portfolio.targets}
         />
         <DriftIndicator
@@ -155,7 +195,7 @@ export default function Dashboard() {
       {/* Portfolio setup */}
       <PortfolioSetup
         initialTargets={portfolio.targets}
-        holdings={portfolio.holdings}
+        holdings={effectiveHoldings}
         triggerMode={portfolio.triggerMode}
         onSave={handleSaveTargets}
       />
