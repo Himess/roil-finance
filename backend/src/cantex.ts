@@ -1,8 +1,7 @@
-import { spawn } from 'node:child_process';
 import { config } from './config.js';
-import { withRetry } from './utils/retry.js';
-import { cantexBreaker } from './utils/circuit-breaker.js';
 import { CantexError } from './utils/errors.js';
+import { CantexRealClient } from './cantex-client.js';
+import { logger } from './monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -59,98 +58,7 @@ function generateTxId(): string {
 // Python Cantex SDK bridge
 // ---------------------------------------------------------------------------
 
-/**
- * Execute a Cantex SDK command via Python subprocess.
- * The Cantex SDK is Python-only, so we bridge via a thin Python script.
- */
-async function callCantexPython(command: string, args: Record<string, unknown>): Promise<unknown> {
-  return new Promise((resolve, reject) => {
-    const script = `
-import asyncio, json, sys, os
-sys.path.insert(0, os.environ.get('CANTEX_SDK_PATH', '.'))
-
-from cantex_sdk import CantexSDK, OperatorKeySigner, IntentTradingKeySigner
-
-async def main():
-    op_key = os.environ.get('CANTEX_OPERATOR_KEY', '')
-    tr_key = os.environ.get('CANTEX_TRADING_KEY', '')
-    base_url = os.environ.get('CANTEX_BASE_URL', '')
-
-    op_signer = OperatorKeySigner(bytes.fromhex(op_key))
-    tr_signer = IntentTradingKeySigner(bytes.fromhex(tr_key))
-
-    async with CantexSDK(op_signer, tr_signer, base_url=base_url) as sdk:
-        await sdk.authenticate()
-        cmd = json.loads(sys.argv[1])
-        args = json.loads(sys.argv[2])
-
-        if cmd == 'get_quote':
-            result = await sdk.get_swap_quote(
-                args['amount'], args['sell_id'], args['sell_admin'],
-                args['buy_id'], args['buy_admin']
-            )
-            print(json.dumps({'price': float(result.price), 'output': float(result.buy_amount),
-                             'fee': float(result.fees.total_fee)}))
-
-        elif cmd == 'swap':
-            result = await sdk.swap(
-                args['amount'], args['sell_id'], args['sell_admin'],
-                args['buy_id'], args['buy_admin']
-            )
-            print(json.dumps({'success': True, 'tx_id': str(result)}))
-
-        elif cmd == 'get_account':
-            info = await sdk.get_account_info()
-            balances = []
-            for b in info.balances:
-                balances.append({'asset': b.instrument_id, 'amount': float(b.unlocked_amount)})
-            print(json.dumps(balances))
-
-        elif cmd == 'get_pools':
-            pools = await sdk.get_pool_info()
-            result = []
-            for p in pools.pools:
-                result.append({'pair': f"{p.instrument_a_id}/{p.instrument_b_id}",
-                              'liquidity': float(p.total_liquidity)})
-            print(json.dumps(result))
-
-asyncio.run(main())
-`;
-
-    const env = {
-      ...process.env,
-      CANTEX_OPERATOR_KEY: config.cantexOperatorKey,
-      CANTEX_TRADING_KEY: config.cantexTradingKey,
-      CANTEX_BASE_URL: config.cantexApiUrl,
-    };
-
-    const proc = spawn('python3', ['-c', script, command, JSON.stringify(args)], {
-      env,
-      timeout: 30_000,
-    });
-
-    let stdout = '';
-    let stderr = '';
-    proc.stdout.on('data', (d) => { stdout += d.toString(); });
-    proc.stderr.on('data', (d) => { stderr += d.toString(); });
-
-    proc.on('close', (code) => {
-      if (code !== 0) {
-        reject(new CantexError(`Cantex Python bridge failed (code ${code}): ${stderr}`));
-        return;
-      }
-      try {
-        resolve(JSON.parse(stdout.trim()));
-      } catch {
-        reject(new CantexError(`Cantex Python bridge returned invalid JSON: ${stdout}`));
-      }
-    });
-
-    proc.on('error', (err) => {
-      reject(new CantexError(`Cantex Python bridge spawn failed: ${err.message}`));
-    });
-  });
-}
+// Python bridge removed — replaced with native TypeScript CantexRealClient
 
 // ---------------------------------------------------------------------------
 // CantexClient — dual mode (mock + real)
@@ -158,14 +66,16 @@ asyncio.run(main())
 
 export class CantexClient {
   private readonly useMock: boolean;
+  private readonly realClient: CantexRealClient | null;
 
   constructor() {
-    // Use mock if no Cantex keys configured or on localnet
     this.useMock = !config.cantexOperatorKey || config.network === 'localnet';
     if (this.useMock) {
-      console.log('[Cantex] Running in MOCK mode (no Cantex keys configured)');
+      this.realClient = null;
+      logger.info('[Cantex] Running in MOCK mode (no Cantex keys configured)');
     } else {
-      console.log(`[Cantex] Connected to ${config.cantexApiUrl}`);
+      this.realClient = new CantexRealClient();
+      logger.info(`[Cantex] Connected to ${config.cantexApiUrl} via native TS client`);
     }
   }
 
@@ -186,26 +96,18 @@ export class CantexClient {
       return { fromAsset, toAsset, inputAmount: amount, outputAmount: output, price: rate, fee, slippage: 0 };
     }
 
-    const result = await cantexBreaker.execute(() =>
-      withRetry(
-        () => callCantexPython('get_quote', {
-          amount,
-          sell_id: fromAsset,
-          sell_admin: this.getAdmin(fromAsset),
-          buy_id: toAsset,
-          buy_admin: this.getAdmin(toAsset),
-        }),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
-      ),
-    ) as { price: number; output: number; fee: number };
+    const quote = await this.realClient!.getSwapQuote(
+      amount, fromAsset, this.getAdmin(fromAsset),
+      toAsset, this.getAdmin(toAsset),
+    );
 
     return {
       fromAsset, toAsset,
       inputAmount: amount,
-      outputAmount: result.output,
-      price: result.price,
-      fee: result.fee,
-      slippage: 0,
+      outputAmount: quote.returnedAmount,
+      price: quote.tradePrice,
+      fee: quote.fees.amountAdmin + quote.fees.amountLiquidity + quote.fees.networkFee,
+      slippage: quote.slippage,
     };
   }
 
@@ -226,28 +128,17 @@ export class CantexClient {
       };
     }
 
-    const result = await cantexBreaker.execute(() =>
-      withRetry(
-        () => callCantexPython('swap', {
-          amount,
-          sell_id: fromAsset,
-          sell_admin: this.getAdmin(fromAsset),
-          buy_id: toAsset,
-          buy_admin: this.getAdmin(toAsset),
-        }),
-        { maxRetries: 2, baseDelayMs: 1000, maxDelayMs: 5000 },
-      ),
-    ) as { tx_id: string };
-
-    // Re-query to get the exact output amount
-    const quote = await this.getQuote(fromAsset, toAsset, amount);
+    const result = await this.realClient!.executeSwap(
+      amount, fromAsset, this.getAdmin(fromAsset),
+      toAsset, this.getAdmin(toAsset),
+    );
 
     return {
-      txId: result.tx_id,
+      txId: result.txId,
       fromAsset, toAsset,
       inputAmount: amount,
-      outputAmount: quote.outputAmount,
-      fee: quote.fee,
+      outputAmount: result.outputAmount,
+      fee: 0, // fee included in output
       timestamp: new Date().toISOString(),
     };
   }
@@ -265,12 +156,11 @@ export class CantexClient {
       ];
     }
 
-    return await cantexBreaker.execute(() =>
-      withRetry(
-        () => callCantexPython('get_account', {}),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
-      ),
-    ) as Balance[];
+    const info = await this.realClient!.getAccountInfo();
+    return info.balances.map(b => ({
+      asset: b.instrumentId,
+      amount: b.amount,
+    }));
   }
 
   // -----------------------------------------------------------------------
@@ -285,12 +175,13 @@ export class CantexClient {
       ];
     }
 
-    return await cantexBreaker.execute(() =>
-      withRetry(
-        () => callCantexPython('get_pools', {}),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5000 },
-      ),
-    ) as PoolInfo[];
+    const pools = await this.realClient!.getPoolsInfo();
+    return pools.map(p => ({
+      pair: `${p.tokenA.id}/${p.tokenB.id}`,
+      liquidity: p.reserveA + p.reserveB,
+      volume24h: 0, // not available from pools endpoint
+      fee: BASE_FEE_PCT,
+    }));
   }
 
   // -----------------------------------------------------------------------
