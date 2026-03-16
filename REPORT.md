@@ -4,7 +4,7 @@
 **Proje:** Canton Private Rebalancer (Glider-style)
 **Konum:** C:\Users\USER\Desktop\canton\canton-rebalancer
 **GitHub:** https://github.com/Himess/canton-rebalancer (public)
-**Durum:** 79 dosya | ~16,938 satır | 73 test (7 Daml + 66 Backend) | Docker v29.2.1 ready
+**Durum:** 103 dosya | ~14,535 satır TS/Daml + configs | 153 test (15 Daml + 138 Backend) | Docker v29.2.1 ready
 
 ---
 
