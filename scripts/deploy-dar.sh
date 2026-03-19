@@ -60,9 +60,9 @@ echo "  Target is healthy."
 
 build_jwt() {
   local header
-  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   echo "${header}.${payload}."
 }
 

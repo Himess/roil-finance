@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react';
+import React, { type ReactNode } from 'react';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -11,7 +11,7 @@ interface StatsCardProps {
   className?: string;
 }
 
-export default function StatsCard({
+function StatsCard({
   title,
   value,
   subtitle,
@@ -22,17 +22,17 @@ export default function StatsCard({
   const isPositive = trend && trend.value >= 0;
 
   return (
-    <div className={clsx('card', className)}>
+    <div className={clsx('card hover:shadow-sm transition-shadow duration-200', className)}>
       <div className="flex items-start justify-between">
         <div>
-          <p className="text-sm text-slate-400 font-medium">{title}</p>
-          <p className="text-2xl font-bold text-white mt-1">{value}</p>
+          <p className="text-base text-ink-secondary font-medium">{title}</p>
+          <p className="text-3xl font-extrabold text-ink mt-1">{value}</p>
           {subtitle && (
-            <p className="text-xs text-slate-500 mt-1">{subtitle}</p>
+            <p className="text-sm text-ink-muted mt-1">{subtitle}</p>
           )}
         </div>
         {icon && (
-          <div className="w-10 h-10 rounded-lg bg-slate-700/50 flex items-center justify-center text-slate-400">
+          <div className="w-10 h-10 rounded-full bg-accent-light flex items-center justify-center text-accent">
             {icon}
           </div>
         )}
@@ -41,22 +41,24 @@ export default function StatsCard({
       {trend && (
         <div className="flex items-center gap-1.5 mt-3">
           {isPositive ? (
-            <TrendingUp className="w-3.5 h-3.5 text-green-400" />
+            <TrendingUp className="w-4 h-4 text-positive" />
           ) : (
-            <TrendingDown className="w-3.5 h-3.5 text-red-400" />
+            <TrendingDown className="w-4 h-4 text-negative" />
           )}
           <span
             className={clsx(
-              'text-xs font-medium',
-              isPositive ? 'text-green-400' : 'text-red-400',
+              'text-sm font-medium',
+              isPositive ? 'text-positive' : 'text-negative',
             )}
           >
             {isPositive ? '+' : ''}
             {trend.value}%
           </span>
-          <span className="text-xs text-slate-500">{trend.label}</span>
+          <span className="text-sm text-ink-muted">{trend.label}</span>
         </div>
       )}
     </div>
   );
 }
+
+export default React.memo(StatsCard);

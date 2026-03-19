@@ -21,7 +21,7 @@ We are building **Canton Rebalancer**, a privacy-preserving portfolio management
 
 ### Technical Stack
 
-- **Smart Contracts:** Daml 3.4.11 (6 contract modules, 73+ tests)
+- **Smart Contracts:** Daml 3.4.11 (6 Daml contract modules, 240+ tests across backend/Daml/frontend, 9 supported assets including RWA tokens (gold, silver, treasury bonds))
 - **Backend:** TypeScript/Express with Canton JSON Ledger API v2
 - **Frontend:** React + Vite + Tailwind CSS
 - **DEX Integration:** Cantex SDK for swap execution
@@ -30,7 +30,7 @@ We are building **Canton Rebalancer**, a privacy-preserving portfolio management
 
 ### GitHub Repository
 
-https://github.com/Himess/canton-rebalancer (currently private, happy to grant access)
+https://github.com/Himess/canton-rebalancer (public repository)
 
 ### Why Canton?
 
@@ -50,6 +50,12 @@ Each user generates multiple TXs per operation:
 - Rewards: 1 TX per recording + monthly distribution
 
 Conservative estimate: 500+ TXs/day per 100 active users.
+
+### Validator Node Requirements
+
+- Docker-capable VPS/cloud instance with static egress IP
+- Minimum 4 vCPU, 8 GB RAM, 100 GB SSD recommended
+- Port 443 open for Canton gRPC + JSON API TLS endpoints
 
 ### Request
 

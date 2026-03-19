@@ -2,6 +2,8 @@
 // Retry utility with exponential backoff and jitter
 // ---------------------------------------------------------------------------
 
+import { logger } from '../monitoring/logger.js';
+
 export interface RetryOptions {
   /** Maximum number of retry attempts (default: 3) */
   maxRetries: number;
@@ -68,7 +70,7 @@ export async function withRetry<T>(
       const jitter = Math.random() * opts.baseDelayMs * 0.5;
       const delay = Math.min(exponentialDelay + jitter, opts.maxDelayMs);
 
-      console.log(
+      logger.warn(
         `[retry] Attempt ${attempt + 1}/${opts.maxRetries} failed: ${lastError.message}. Retrying in ${Math.round(delay)}ms...`,
       );
 
@@ -100,7 +102,7 @@ export function retryable(options?: Partial<RetryOptions>) {
       return withRetry(
         () => originalMethod.apply(this, args),
         { ...options, onRetry: options?.onRetry ?? ((attempt, error) => {
-          console.log(`[retry] ${key} attempt ${attempt} failed: ${error.message}`);
+          logger.warn(`[retry] ${key} attempt ${attempt} failed: ${error.message}`);
         })},
       );
     };

@@ -1,6 +1,7 @@
-import { ledger, type DamlContract } from '../ledger.js';
+import { ledger, extractCreatedContractId, type DamlContract } from '../ledger.js';
 import { cantex } from '../cantex.js';
 import { config, TEMPLATES, TOKEN_STANDARD, INSTRUMENTS } from '../config.js';
+import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -143,7 +144,7 @@ export class TokenTransferService {
 
   constructor() {
     this.mode = getMode();
-    console.log(`[TokenTransfer] Running in ${this.mode.toUpperCase()} mode`);
+    logger.info(`[TokenTransfer] Running in ${this.mode.toUpperCase()} mode`);
   }
 
   // -----------------------------------------------------------------------
@@ -188,9 +189,9 @@ export class TokenTransferService {
         amount: Number(c.payload.amount),
       }));
     } catch (err) {
-      console.error('[TokenTransfer] Failed to query CIP-0056 Holdings:', err);
+      logger.error('[TokenTransfer] Failed to query CIP-0056 Holdings', { error: String(err) });
       // Fallback to Cantex balances if CIP-0056 query fails
-      console.log('[TokenTransfer] Falling back to Cantex balances');
+      logger.info('[TokenTransfer] Falling back to Cantex balances');
       return this.queryHoldingsInternal(party);
     }
   }
@@ -237,8 +238,10 @@ export class TokenTransferService {
       await this.createCIP56Transfer(sender, receiver, instrumentId, admin, amount);
     }
 
-    // Create our own TransferRequest to track the transfer
-    const contractId = await ledger.createAs(
+    // Create our own TransferRequest to track the transfer.
+    // Use both platform and sender as actAs parties to satisfy the
+    // Daml signatory requirement: signatory platform, sender
+    const createResult = await ledger.create(
       TRANSFER_TEMPLATES.TransferRequest,
       {
         platform,
@@ -251,10 +254,11 @@ export class TokenTransferService {
         memo,
         createdAt: now,
       },
-      platform,
+      [platform, sender],
     );
+    const contractId = extractCreatedContractId(createResult);
 
-    console.log(
+    logger.info(
       `[TokenTransfer] Created TransferRequest ${contractId}: ` +
       `${amount} ${instrumentId} from ${sender.slice(0, 16)}... to ${receiver.slice(0, 16)}...`,
     );
@@ -302,13 +306,13 @@ export class TokenTransferService {
         [sender],
       );
 
-      console.log(
+      logger.info(
         `[TokenTransfer] CIP-0056 TransferInstruction created: ` +
         `${amount} ${instrumentId}`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TokenTransfer] CIP-0056 Transfer failed: ${message}`);
+      logger.error(`[TokenTransfer] CIP-0056 Transfer failed: ${message}`);
       throw new Error(`CIP-0056 transfer failed: ${message}`);
     }
   }
@@ -342,8 +346,10 @@ export class TokenTransferService {
     const now = new Date().toISOString();
 
     try {
-      // 1. Create SwapRequest on ledger
-      const swapRequestCid = await ledger.createAs(
+      // 1. Create SwapRequest on ledger.
+      // Use both platform and user as actAs parties to satisfy the
+      // Daml signatory requirement: signatory platform, user
+      const swapCreateResult = await ledger.create(
         TRANSFER_TEMPLATES.SwapRequest,
         {
           platform,
@@ -354,13 +360,15 @@ export class TokenTransferService {
           buyAsset,
           buyAdmin,
           buyAmount: String(expectedBuyAmount),
+          minBuyAmount: String(expectedBuyAmount * (1 - parseFloat(process.env.SLIPPAGE_TOLERANCE || '0.02'))), // configurable slippage tolerance
           status: { tag: 'Pending', value: {} },
           createdAt: now,
         },
-        platform,
+        [platform, user],
       );
+      const swapRequestCid = extractCreatedContractId(swapCreateResult);
 
-      console.log(
+      logger.info(
         `[TokenTransfer] SwapRequest ${swapRequestCid}: ` +
         `${sellAmount} ${sellAsset} -> ~${expectedBuyAmount} ${buyAsset}`,
       );
@@ -369,7 +377,7 @@ export class TokenTransferService {
       const swapResult = await cantex.executeSwap(sellAsset, buyAsset, sellAmount);
       const actualBuyAmount = swapResult.outputAmount;
 
-      console.log(
+      logger.info(
         `[TokenTransfer] Cantex swap executed: ` +
         `${sellAmount} ${sellAsset} -> ${actualBuyAmount} ${buyAsset} ` +
         `(tx: ${swapResult.txId})`,
@@ -397,7 +405,7 @@ export class TokenTransferService {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[TokenTransfer] Swap failed: ${message}`);
+      logger.error(`[TokenTransfer] Swap failed: ${message}`);
 
       return {
         success: false,
@@ -438,7 +446,7 @@ export class TokenTransferService {
         });
       }
     } catch (err) {
-      console.error('[TokenTransfer] Failed to query TransferLog:', err);
+      logger.error('[TokenTransfer] Failed to query TransferLog', { error: String(err) });
     }
 
     // Query SwapLog contracts
@@ -456,7 +464,7 @@ export class TokenTransferService {
         });
       }
     } catch (err) {
-      console.error('[TokenTransfer] Failed to query SwapLog:', err);
+      logger.error('[TokenTransfer] Failed to query SwapLog', { error: String(err) });
     }
 
     // Sort by timestamp descending (newest first)
@@ -491,6 +499,60 @@ export class TokenTransferService {
     );
 
     return contracts.filter((c) => c.payload.status.tag === 'Pending');
+  }
+
+  // -----------------------------------------------------------------------
+  // CIP-0056 Allocation (token locking)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Create a CIP-0056 allocation (token lock) for pending swaps.
+   * This locks tokens in escrow before a swap executes.
+   */
+  async createAllocation(
+    owner: string,
+    instrumentId: string,
+    amount: number,
+    lockHolder: string,
+  ): Promise<{ allocationId: string; holdingCid: string } | null> {
+    if (this.mode === 'internal') {
+      logger.info('[TokenTransfer] Allocation skipped in internal mode');
+      return null;
+    }
+
+    try {
+      // Query AllocationFactory
+      const factories = await ledger.queryContracts(
+        { [config.platformParty]: { templateIds: [TOKEN_STANDARD.AllocationFactory] } },
+        [config.platformParty],
+      );
+
+      if (factories.length === 0) {
+        logger.warn('[TokenTransfer] No AllocationFactory found');
+        return null;
+      }
+
+      const factory = factories[0];
+      const result = await ledger.exercise(
+        TOKEN_STANDARD.AllocationFactory,
+        factory.contractId,
+        'Allocate',
+        {
+          instrument: { id: instrumentId, admin: INSTRUMENTS[instrumentId as keyof typeof INSTRUMENTS]?.admin || '' },
+          owner: { party: owner },
+          amount: String(amount),
+          lockHolder: { party: lockHolder },
+        },
+        [config.platformParty, owner],
+      );
+
+      const allocationId = extractCreatedContractId(result);
+      logger.info(`[TokenTransfer] Allocation created: ${allocationId}`);
+      return { allocationId: allocationId || '', holdingCid: '' };
+    } catch (err) {
+      logger.warn('[TokenTransfer] Allocation failed, continuing without lock', { error: String(err) });
+      return null;
+    }
   }
 
   // -----------------------------------------------------------------------

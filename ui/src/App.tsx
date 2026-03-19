@@ -1,11 +1,37 @@
 import { useEffect } from 'react';
-import { Routes, Route } from 'react-router-dom';
+import { Routes, Route, Link, Navigate, useParams } from 'react-router-dom';
+import { Wrench } from 'lucide-react';
 import Sidebar from '@/components/Sidebar';
 import Dashboard from '@/pages/Dashboard';
+import CreatePortfolio from '@/pages/CreatePortfolio';
 import DCAPage from '@/pages/DCAPage';
 import RewardsPage from '@/pages/RewardsPage';
+import TransactionDetail from '@/pages/TransactionDetail';
+import SettingsPage from '@/pages/SettingsPage';
+import Slides from '@/pages/Slides';
+import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { ToastProvider } from '@/components/Toast';
 import { PartyProvider, useParty } from '@/context/PartyContext';
 import { useWallet } from '@/hooks/useWallet';
+
+function ReferralRedirect() {
+  const { code } = useParams();
+  // Store referral code in localStorage for later use
+  if (code) localStorage.setItem('referralCode', code);
+  return <Navigate to="/rewards" replace />;
+}
+
+function NotFound() {
+  return (
+    <div className="flex flex-col items-center justify-center py-20">
+      <h1 className="text-4xl font-bold text-ink mb-2">404</h1>
+      <p className="text-ink-secondary mb-6">Page not found</p>
+      <Link to="/" className="btn-primary">
+        Return to Dashboard
+      </Link>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // PartySelector — manual party override for dev/testing.
@@ -20,22 +46,27 @@ function PartySelector() {
   if (connected) return null;
 
   return (
-    <div className="flex items-center gap-2 px-6 py-2 bg-slate-800/50 border-b border-slate-700">
-      <label
-        htmlFor="party-select"
-        className="text-xs text-slate-500 shrink-0"
-      >
-        Party:
-      </label>
-      <input
-        id="party-select"
-        type="text"
-        value={party}
-        onChange={(e) => setParty(e.target.value)}
-        className="flex-1 max-w-md bg-slate-900 border border-slate-600 rounded px-2 py-1 text-xs text-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
-        spellCheck={false}
-      />
-      <span className="text-xs text-slate-600">(dev/testing)</span>
+    <div className="px-4 py-1 bg-amber-50 border-b border-amber-200 flex items-center gap-3">
+      <div className="flex items-center gap-1.5 shrink-0">
+        <Wrench className="w-3.5 h-3.5 text-amber-700" />
+        <span className="text-sm font-semibold text-amber-700">Dev</span>
+      </div>
+      <div className="flex items-center gap-2 flex-1">
+        <label
+          htmlFor="party-select"
+          className="text-sm text-ink-muted shrink-0"
+        >
+          Party:
+        </label>
+        <input
+          id="party-select"
+          type="text"
+          value={party}
+          onChange={(e) => setParty(e.target.value)}
+          className="flex-1 max-w-md bg-surface border border-amber-200 rounded px-2 py-1 text-sm text-ink font-mono focus:outline-none focus:ring-1 focus:ring-amber-500"
+          spellCheck={false}
+        />
+      </div>
     </div>
   );
 }
@@ -65,18 +96,18 @@ function AppContent() {
   const { connected, displayName } = useWallet();
 
   return (
-    <div className="min-h-screen bg-slate-900">
+    <div className="h-screen overflow-hidden">
       <Sidebar />
 
-      {/* Main content area — offset by sidebar width */}
-      <main className="ml-60 min-h-screen">
+      {/* Main content area — offset by fixed sidebar, full height */}
+      <main className="h-screen overflow-y-auto pt-14 md:pt-0 md:ml-60 flex flex-col">
         {/* Wallet-connected banner */}
         {connected && displayName && (
-          <div className="flex items-center gap-2 px-6 py-2 bg-blue-600/10 border-b border-blue-500/20">
+          <div className="flex items-center gap-2 px-6 py-2 bg-accent-light border-b border-blue-200">
             <div className="w-2 h-2 rounded-full bg-green-500" />
-            <span className="text-xs text-blue-300">
+            <span className="text-base text-accent">
               Wallet connected as{' '}
-              <span className="font-semibold text-blue-200">
+              <span className="font-semibold text-accent-hover">
                 {displayName}
               </span>
             </span>
@@ -89,12 +120,19 @@ function AppContent() {
         {/* Sync wallet party -> PartyContext */}
         <WalletPartySync />
 
-        <div className="max-w-6xl mx-auto px-6 py-8">
-          <Routes>
-            <Route path="/" element={<Dashboard />} />
-            <Route path="/dca" element={<DCAPage />} />
-            <Route path="/rewards" element={<RewardsPage />} />
-          </Routes>
+        <div className="flex-1 flex flex-col min-h-0 mx-auto p-3 w-full">
+          <ErrorBoundary>
+            <Routes>
+              <Route path="/" element={<Dashboard />} />
+              <Route path="/create" element={<CreatePortfolio />} />
+              <Route path="/dca" element={<DCAPage />} />
+              <Route path="/rewards" element={<RewardsPage />} />
+              <Route path="/tx/:id" element={<TransactionDetail />} />
+              <Route path="/settings" element={<SettingsPage />} />
+              <Route path="/ref/:code" element={<ReferralRedirect />} />
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </ErrorBoundary>
         </div>
       </main>
     </div>
@@ -104,7 +142,12 @@ function AppContent() {
 export default function App() {
   return (
     <PartyProvider>
-      <AppContent />
+      <ToastProvider>
+        <Routes>
+          <Route path="/slides" element={<Slides />} />
+          <Route path="/*" element={<AppContent />} />
+        </Routes>
+      </ToastProvider>
     </PartyProvider>
   );
 }

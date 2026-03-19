@@ -35,16 +35,41 @@ export function _resetRateLimiterState(): void {
   requestCounts.clear();
 }
 
+// Cleanup expired entries every 60 seconds to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of requestCounts.entries()) {
+    if (now > entry.resetAt) {
+      requestCounts.delete(ip);
+    }
+  }
+}, 60_000).unref();
+
 // ---------------------------------------------------------------------------
 // Input sanitization
 // ---------------------------------------------------------------------------
 
+function sanitizeObject(obj: unknown, depth = 0): void {
+  if (depth > 20 || !obj || typeof obj !== 'object') return;
+  const record = obj as Record<string, unknown>;
+  const dangerousKeys = ['__proto__', 'constructor', 'prototype'];
+  for (const key of dangerousKeys) {
+    if (key in record) {
+      record[key] = undefined;
+      Reflect.deleteProperty(record, key);
+    }
+  }
+  for (const value of Object.values(record)) {
+    if (value && typeof value === 'object') {
+      sanitizeObject(value, depth + 1);
+    }
+  }
+}
+
 export function sanitizeInput(req: Request, _res: Response, next: NextFunction): void {
-  // Strip any potential prototype pollution
+  // Recursively strip prototype pollution keys from body
   if (req.body && typeof req.body === 'object') {
-    delete req.body.__proto__;
-    delete req.body.constructor;
-    delete req.body.prototype;
+    sanitizeObject(req.body);
   }
   next();
 }
@@ -76,3 +101,5 @@ export function requestSizeLimiter(maxBytes: number = 1_048_576) {
     next();
   };
 }
+
+// For production multi-instance deployment, use rate-limiter.ts instead

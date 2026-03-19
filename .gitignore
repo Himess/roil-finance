@@ -23,6 +23,12 @@ backend/dist/
 .DS_Store
 Thumbs.db
 
+# Key files (prevent accidental credential commits)
+*.pem
+*.key
+*.p12
+*.pfx
+
 # Canton setup files (large binaries)
 setup/
 .cn-quickstart/

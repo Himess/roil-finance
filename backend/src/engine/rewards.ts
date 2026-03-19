@@ -1,5 +1,6 @@
 import { config, TEMPLATES } from '../config.js';
 import { ledger } from '../ledger.js';
+import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,7 +51,7 @@ export interface PayoutRecord {
 // ---------------------------------------------------------------------------
 
 /** Determine reward tier from monthly TX count — mirrors Daml getTier */
-function getTier(txCount: number): RewardTier {
+export function getTier(txCount: number): RewardTier {
   if (txCount <= 50) return 'Bronze';
   if (txCount <= 200) return 'Silver';
   if (txCount <= 500) return 'Gold';
@@ -58,7 +59,7 @@ function getTier(txCount: number): RewardTier {
 }
 
 /** Fee rebate percentage per tier — mirrors Daml getFeeRebatePct */
-function getFeeRebatePct(tier: RewardTier): number {
+export function getFeeRebatePct(tier: RewardTier): number {
   switch (tier) {
     case 'Bronze':
       return 0.5;
@@ -72,7 +73,7 @@ function getFeeRebatePct(tier: RewardTier): number {
 }
 
 /** Get the next tier above the current one, or null if at max */
-function getNextTier(tier: RewardTier): RewardTier | null {
+export function getNextTier(tier: RewardTier): RewardTier | null {
   switch (tier) {
     case 'Bronze':
       return 'Silver';
@@ -86,7 +87,7 @@ function getNextTier(tier: RewardTier): RewardTier | null {
 }
 
 /** TXs needed to reach the next tier */
-function txToNextTier(currentTxCount: number, tier: RewardTier): number {
+export function txToNextTier(currentTxCount: number, tier: RewardTier): number {
   switch (tier) {
     case 'Bronze':
       return Math.max(0, 51 - currentTxCount);
@@ -100,13 +101,13 @@ function txToNextTier(currentTxCount: number, tier: RewardTier): number {
 }
 
 /** Parse Daml tier variant encoding into a tier string */
-function parseTier(tier: string | { tag: string }): RewardTier {
+export function parseTier(tier: string | { tag: string }): RewardTier {
   if (typeof tier === 'string') return tier as RewardTier;
   return (tier.tag ?? 'Bronze') as RewardTier;
 }
 
 /** Get current month ID in YYYY-MM format */
-function currentMonthId(): string {
+export function currentMonthId(): string {
   const now = new Date();
   const year = now.getFullYear();
   const month = String(now.getMonth() + 1).padStart(2, '0');
@@ -123,7 +124,7 @@ function currentMonthId(): string {
  * - Gold:     0.50 CC
  * - Platinum: 1.00 CC
  */
-function calculateRewardAmount(tier: RewardTier, txCount: number): number {
+export function calculateRewardAmount(tier: RewardTier, txCount: number): number {
   const ratePerTx: Record<RewardTier, number> = {
     Bronze: 0.1,
     Silver: 0.25,
@@ -185,8 +186,9 @@ export class RewardsEngine {
           user: userId,
           monthId,
           txCount: 0,
-          tier: 'Bronze',
-          consecutiveMonths: 1,
+          tier: { tag: 'Bronze', value: {} },
+          previousTier: null, // Canton JSON API v2: null = Daml Optional None
+          consecutiveMonths: 0,
           totalRewardsEarned: '0.0',
         },
         platform,
@@ -202,6 +204,24 @@ export class RewardsEngine {
         },
         platform,
       );
+    }
+
+    // After successful TX recording, check for referrals and credit referrer
+    try {
+      const referrals = await ledger.query(TEMPLATES.Referral, platform);
+      const userReferral = referrals.find((r: any) => r.payload.referee === userId);
+      if (userReferral && (userReferral.payload as any).isActive) {
+        await ledger.exerciseAs(
+          TEMPLATES.Referral,
+          userReferral.contractId,
+          'CreditReferrer',
+          { refereeTxValue: String(txValue), timestamp: new Date().toISOString() },
+          platform,
+        );
+        logger.info('Referral credit recorded', { referee: userId, referrer: (userReferral.payload as any).referrer });
+      }
+    } catch (err) {
+      logger.warn('Referral credit failed', { error: String(err) });
     }
   }
 
@@ -324,19 +344,20 @@ export class RewardsEngine {
             platform,
           );
 
-          console.log(
-            `[rewards] Distributed ${rewardAmount.toFixed(2)} CC to ${payload.user} ` +
+          logger.info(
+            `Distributed ${rewardAmount.toFixed(2)} CC to ${payload.user} ` +
               `(tier=${tier}, txCount=${payload.txCount}, month=${prevMonthId})`,
+            { component: 'rewards' },
           );
           distributed++;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          console.error(`[rewards] Failed for ${tracker.payload.user}: ${message}`);
+          logger.error(`Failed for ${tracker.payload.user}: ${message}`, { component: 'rewards' });
           failed++;
         }
       }
     } catch (err) {
-      console.error('[rewards] Error distributing rewards:', err);
+      logger.error('Error distributing rewards', { component: 'rewards', error: err instanceof Error ? err.message : String(err) });
     }
 
     return { distributed, failed };

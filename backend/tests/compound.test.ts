@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { CompoundEngine, lastCompoundTime, type CompoundConfig, type YieldSource } from '../src/engine/compound.js';
+import { CompoundEngine, lastCompoundTime, _resetCompoundState, type CompoundConfig, type YieldSource } from '../src/engine/compound.js';
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -96,7 +96,7 @@ describe('CompoundEngine', () => {
 
   beforeEach(() => {
     engine = new CompoundEngine();
-    lastCompoundTime.clear();
+    _resetCompoundState();
     vi.clearAllMocks();
   });
 

@@ -4,10 +4,15 @@ Private portfolio rebalancer on Canton Network. Auto-rebalance, DCA, and compoun
 
 ## Features
 
-- **Portfolio Management** — Set target allocations across CC, USDCx, CBTC
-- **Auto-Rebalance** — Automatic rebalancing when drift exceeds threshold
+- **Portfolio Management** — Set target allocations across 9 supported assets with 8 pre-built strategy templates
+- **Auto-Rebalance** — Automatic rebalancing when drift exceeds threshold or price conditions are met
 - **DCA (Dollar Cost Averaging)** — Recurring purchases at configurable intervals
+- **Auto-Compounding** — Auto-compounding (simulated yield sources) with 3 reinvestment strategies
+- **Performance Tracking** — 24h/7d/30d portfolio analytics and snapshots
+- **Portfolio Templates** — 8 pre-built strategy templates (Conservative, Balanced Growth, BTC-ETH Maxi, etc.)
+- **Create Wizard** — Step-by-step portfolio creation with equal or custom weight modes
 - **Reward Tiers** — Bronze → Silver → Gold → Platinum based on monthly TX count
+- **RWA Tokens** — Tokenized gold (XAUt), silver (XAGt), treasury bonds (USTb), money market fund (MMF)
 - **Privacy** — Portfolio composition, trades, and balances hidden via Canton's sub-transaction privacy
 
 ## Architecture
@@ -23,7 +28,7 @@ Frontend (React + Vite) → Backend (Express API) → Canton Ledger (Daml)
 |-------|-----------|
 | Smart Contracts | Daml 3.4.11 |
 | Backend | TypeScript, Express, node-cron |
-| Frontend | React 18, Vite, Tailwind CSS, Recharts |
+| Frontend | React 19, Vite, Tailwind CSS, Recharts |
 | DEX | Cantex (CaviarNine) |
 | Wallet | @canton-network/dapp-sdk |
 
@@ -34,25 +39,40 @@ Frontend (React + Vite) → Backend (Express API) → Canton Ledger (Daml)
 - Daml SDK 3.4.11
 - Node.js 20+
 
-### Setup
+### Setup (Recommended — LocalNet via Docker)
 ```bash
 # Environment (required for Turkish locale systems)
 source .envrc
 
+# Start Canton LocalNet (builds contracts, starts Docker services, uploads DAR)
+./scripts/setup-localnet.sh
+
+# Initialize ledger (allocate parties, create initial contracts)
+cd backend && npx tsx ../scripts/init-ledger.ts
+
+# Start backend
+cd backend && npm run dev
+
+# Start frontend (separate terminal)
+cd ui && npm run dev
+```
+
+Open http://localhost:5173 to access the UI, backend API runs on http://localhost:3001.
+
+### Alternative — Manual Canton Sandbox
+```bash
 # Build Daml contracts
 cd main && daml build && cd ..
 cd test && daml build && daml test && cd ..
 
-# Backend
+# Start sandbox with JSON API (Daml 3.x syntax)
+cd main && daml start --json-api-port 3975
+
+# Backend (separate terminal)
 cd backend && npm install && npm run dev
 
 # Frontend (separate terminal)
 cd ui && npm install && npm run dev
-```
-
-### Start Canton Sandbox
-```bash
-cd main && daml sandbox --json-api-port 7575 --dar .daml/dist/canton-rebalancer-0.1.0.dar
 ```
 
 ## Project Structure
@@ -88,11 +108,21 @@ canton-rebalancer/
 
 ## Assets
 
-| Asset | Description |
-|-------|-------------|
-| CC | Canton Coin (native) |
-| USDCx | USDC on Canton (Circle) |
-| CBTC | Wrapped Bitcoin (BitSafe) |
+| Asset | Description | Category |
+|-------|-------------|----------|
+| CC | Canton Coin (native) | Crypto |
+| USDCx | USDC on Canton (Circle) | Stablecoin |
+| CBTC | Wrapped Bitcoin (BitSafe) | Crypto |
+| ETHx | Canton ETH | Crypto |
+| SOLx | Canton SOL | Crypto |
+| XAUt | Tokenized Gold | RWA |
+| XAGt | Tokenized Silver | RWA |
+| USTb | US Treasury Bond | RWA |
+| MMF | Money Market Fund | RWA |
+
+## Testing
+
+~240 automated tests (204 backend + 26 Daml + 9 frontend).
 
 ## License
 

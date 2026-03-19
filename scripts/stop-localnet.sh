@@ -55,13 +55,13 @@ fi
 
 if [ "$CLEAN" = true ]; then
   echo "Stopping containers and removing volumes..."
-  docker compose $OVERRIDE_ARGS down -v --remove-orphans
+  docker compose -f docker-compose.yml $OVERRIDE_ARGS down -v --remove-orphans
   echo ""
   echo "All containers stopped and volumes removed."
   echo "Run ./scripts/setup-localnet.sh to start fresh."
 else
   echo "Stopping containers (preserving volumes)..."
-  docker compose $OVERRIDE_ARGS down --remove-orphans
+  docker compose -f docker-compose.yml $OVERRIDE_ARGS down --remove-orphans
   echo ""
   echo "All containers stopped. Data volumes preserved."
   echo "Run 'docker compose up -d' in .cn-quickstart/ to restart."

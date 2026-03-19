@@ -1,6 +1,7 @@
+import React from 'react';
 import { ArrowRight, Pause, Play, Trash2, Clock } from 'lucide-react';
 import clsx from 'clsx';
-import { ASSET_COLORS } from '@/config';
+import TokenIcon from '@/components/TokenIcon';
 import type { DCASchedule } from '@/types';
 
 interface DCACardProps {
@@ -36,15 +37,12 @@ function timeSince(iso: string): string {
   return `${months}mo ago`;
 }
 
-export default function DCACard({
+function DCACard({
   schedule,
   onPause,
   onResume,
   onCancel,
 }: DCACardProps) {
-  const srcColor = ASSET_COLORS[schedule.sourceAsset.symbol] ?? '#6B7280';
-  const tgtColor = ASSET_COLORS[schedule.targetAsset.symbol] ?? '#6B7280';
-
   return (
     <div
       className={clsx(
@@ -52,28 +50,18 @@ export default function DCACard({
         !schedule.isActive && 'opacity-60',
       )}
     >
-      {/* Header row: source → target */}
+      {/* Header row: source -> target */}
       <div className="flex items-center gap-3 mb-4">
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
-          style={{ backgroundColor: srcColor }}
-        >
-          {schedule.sourceAsset.symbol.charAt(0)}
-        </div>
+        <TokenIcon symbol={schedule.sourceAsset.symbol} size={32} />
 
-        <ArrowRight className="w-4 h-4 text-slate-500" />
+        <ArrowRight className="w-4 h-4 text-ink-muted" />
 
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
-          style={{ backgroundColor: tgtColor }}
-        >
-          {schedule.targetAsset.symbol.charAt(0)}
-        </div>
+        <TokenIcon symbol={schedule.targetAsset.symbol} size={32} />
 
         <div className="flex-1">
-          <p className="text-sm font-semibold text-white">
+          <p className="text-base font-semibold text-ink">
             {schedule.sourceAsset.symbol}{' '}
-            <span className="text-slate-500 font-normal">to</span>{' '}
+            <span className="text-ink-muted font-normal">to</span>{' '}
             {schedule.targetAsset.symbol}
           </p>
         </div>
@@ -83,8 +71,8 @@ export default function DCACard({
           className={clsx(
             'badge',
             schedule.isActive
-              ? 'bg-green-500/15 text-green-400'
-              : 'bg-slate-700 text-slate-400',
+              ? 'bg-emerald-50 text-positive'
+              : 'bg-surface-muted text-ink-secondary',
           )}
         >
           {schedule.isActive ? 'Active' : 'Paused'}
@@ -94,32 +82,32 @@ export default function DCACard({
       {/* Stats grid */}
       <div className="grid grid-cols-3 gap-3 mb-4">
         <div>
-          <p className="text-xs text-slate-500">Amount</p>
-          <p className="text-sm font-medium text-white">
+          <p className="text-sm text-ink-muted">Amount</p>
+          <p className="text-base font-medium text-ink">
             {schedule.amountPerBuy.toLocaleString()}{' '}
-            <span className="text-slate-400 text-xs">
+            <span className="text-ink-secondary text-sm">
               {schedule.sourceAsset.symbol}
             </span>
           </p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">Frequency</p>
-          <p className="text-sm font-medium text-white">
+          <p className="text-sm text-ink-muted">Frequency</p>
+          <p className="text-base font-medium text-ink">
             {formatFrequency(schedule.frequency)}
           </p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">Executions</p>
-          <p className="text-sm font-medium text-white">
+          <p className="text-sm text-ink-muted">Executions</p>
+          <p className="text-base font-medium text-ink">
             {schedule.totalExecutions}
           </p>
         </div>
       </div>
 
       {/* Footer: created time + actions */}
-      <div className="flex items-center justify-between pt-3 border-t border-slate-700">
-        <div className="flex items-center gap-1.5 text-xs text-slate-500">
-          <Clock className="w-3 h-3" />
+      <div className="flex items-center justify-between pt-3 border-t border-surface-border">
+        <div className="flex items-center gap-1.5 text-sm text-ink-muted">
+          <Clock className="w-3.5 h-3.5" />
           Created {timeSince(schedule.createdAt)}
         </div>
 
@@ -127,24 +115,27 @@ export default function DCACard({
           {schedule.isActive ? (
             <button
               onClick={onPause}
-              className="p-1.5 rounded-md hover:bg-slate-700 text-slate-400 hover:text-amber-400 transition-colors"
+              className="p-1.5 rounded-md hover:bg-surface-hover text-ink-secondary hover:text-warning transition-colors"
               title="Pause"
+              aria-label="Pause schedule"
             >
               <Pause className="w-4 h-4" />
             </button>
           ) : (
             <button
               onClick={onResume}
-              className="p-1.5 rounded-md hover:bg-slate-700 text-slate-400 hover:text-green-400 transition-colors"
+              className="p-1.5 rounded-md hover:bg-surface-hover text-ink-secondary hover:text-positive transition-colors"
               title="Resume"
+              aria-label="Resume schedule"
             >
               <Play className="w-4 h-4" />
             </button>
           )}
           <button
             onClick={onCancel}
-            className="p-1.5 rounded-md hover:bg-slate-700 text-slate-400 hover:text-red-400 transition-colors"
+            className="p-1.5 rounded-md hover:bg-surface-hover text-ink-secondary hover:text-negative transition-colors"
             title="Cancel"
+            aria-label="Cancel schedule"
           >
             <Trash2 className="w-4 h-4" />
           </button>
@@ -153,3 +144,5 @@ export default function DCACard({
     </div>
   );
 }
+
+export default React.memo(DCACard);

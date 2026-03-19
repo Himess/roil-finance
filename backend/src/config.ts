@@ -52,7 +52,7 @@ export const config = {
   jsonApiUrl: process.env.JSON_API_URL || defaults.jsonApiUrl,
 
   /** Canton gRPC Ledger API (for advanced use) */
-  grpcApiUrl: process.env.GRPC_API_URL || 'http://localhost:3901',
+  grpcApiUrl: process.env.GRPC_API_URL || 'http://localhost:3901', // Override for devnet/mainnet
 
   /** Canton Scan API URL (for registry lookups) */
   scanUrl: process.env.SCAN_URL || defaults.scanUrl,
@@ -95,14 +95,36 @@ export const config = {
   defaultDriftThreshold: 5.0,
   minTxValue: 10.0,
 
+  // --- Platform fee ---
+  platformFeeRate: parseFloat(process.env.PLATFORM_FEE_RATE || '0.001'),
+
   // --- Cron ---
   dcaCronSchedule: process.env.DCA_CRON || '0 * * * *',
   rebalanceCronSchedule: process.env.REBALANCE_CRON || '*/15 * * * *', // every 15 min
+
+  // --- Featured App ---
+  /** FeaturedAppRight contract ID from GSF registration */
+  featuredAppRightCid: process.env.FEATURED_APP_RIGHT_CID || '',
+
+  // --- Temple DEX ---
+  templeApiUrl: process.env.TEMPLE_API_URL || 'https://app.templedigitalgroup.com/api',
+  templeApiKey: process.env.TEMPLE_API_KEY || '',
 
   // --- Daml package reference ---
   /** Package name as uploaded to the ledger */
   damlPackageName: process.env.DAML_PACKAGE_NAME || 'canton-rebalancer',
 } as const;
+
+// ---------------------------------------------------------------------------
+// Production safety checks
+// ---------------------------------------------------------------------------
+
+if (config.network !== 'localnet' && config.jwtMode === 'unsafe') {
+  throw new Error('JWT_MODE=unsafe is not allowed in non-localnet environments');
+}
+if (config.network !== 'localnet' && config.jwtSecret === 'canton-rebalancer-dev-secret') {
+  throw new Error('Default JWT_SECRET must be changed in non-localnet environments');
+}
 
 // ---------------------------------------------------------------------------
 // Daml template IDs — format: #package-name:Module:Template
@@ -124,6 +146,10 @@ export const TEMPLATES = {
   ReferralCredit: `#${pkg}:RewardTracker:ReferralCredit`,
   FeaturedAppConfig: `#${pkg}:FeaturedApp:FeaturedAppConfig`,
   ActivityRecord: `#${pkg}:FeaturedApp:ActivityRecord`,
+  CompoundConfig: `#${pkg}:Portfolio:CompoundConfig`,
+  UserPreferences: `#${pkg}:Portfolio:UserPreferences`,
+  PortfolioAuditLog: `#${pkg}:Portfolio:PortfolioAuditLog`,
+  CompoundLog: `#${pkg}:Portfolio:CompoundLog`,
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -145,4 +171,140 @@ export const INSTRUMENTS = {
   CC: { id: 'CC', admin: process.env.CC_ADMIN_PARTY || '' },
   USDCx: { id: 'USDCx', admin: process.env.USDCX_ADMIN_PARTY || '' },
   CBTC: { id: 'CBTC', admin: process.env.CBTC_ADMIN_PARTY || '' },
+  ETHx: { id: 'ETHx', admin: process.env.ETHX_ADMIN_PARTY || '' },
+  SOLx: { id: 'SOLx', admin: process.env.SOLX_ADMIN_PARTY || '' },
+  XAUt: { id: 'XAUt', admin: process.env.XAUT_ADMIN_PARTY || '' },  // Tokenized Gold
+  XAGt: { id: 'XAGt', admin: process.env.XAGT_ADMIN_PARTY || '' },  // Tokenized Silver
+  USTb: { id: 'USTb', admin: process.env.USTB_ADMIN_PARTY || '' },  // US Treasury Bonds
+  MMF: { id: 'MMF', admin: process.env.MMF_ADMIN_PARTY || '' },    // Money Market Fund
 } as const;
+
+// ---------------------------------------------------------------------------
+// Portfolio templates — pre-built strategies
+// ---------------------------------------------------------------------------
+
+export const PORTFOLIO_TEMPLATES = [
+  {
+    id: 'conservative',
+    name: 'Conservative',
+    description: 'Heavy stablecoin allocation with bond exposure for stability',
+    targets: [
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 40 },
+      { asset: { symbol: 'USTb', admin: '' }, targetPct: 30 },
+      { asset: { symbol: 'XAUt', admin: '' }, targetPct: 20 },
+      { asset: { symbol: 'CC', admin: '' }, targetPct: 10 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '3.0' },
+    riskLevel: 'low',
+    tags: ['stablecoin', 'low-risk', 'bonds'],
+  },
+  {
+    id: 'balanced',
+    name: 'Balanced Growth',
+    description: 'Mix of crypto, stablecoins, and real-world assets',
+    targets: [
+      { asset: { symbol: 'CBTC', admin: '' }, targetPct: 25 },
+      { asset: { symbol: 'ETHx', admin: '' }, targetPct: 20 },
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 25 },
+      { asset: { symbol: 'XAUt', admin: '' }, targetPct: 15 },
+      { asset: { symbol: 'CC', admin: '' }, targetPct: 15 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '5.0' },
+    riskLevel: 'medium',
+    tags: ['balanced', 'growth'],
+  },
+  {
+    id: 'btc-eth-maxi',
+    name: 'BTC-ETH Maxi',
+    description: 'Heavy crypto allocation focused on Bitcoin and Ethereum',
+    targets: [
+      { asset: { symbol: 'CBTC', admin: '' }, targetPct: 50 },
+      { asset: { symbol: 'ETHx', admin: '' }, targetPct: 30 },
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 20 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '7.0' },
+    riskLevel: 'high',
+    tags: ['bitcoin', 'ethereum', 'crypto-heavy'],
+  },
+  {
+    id: 'crypto-basket',
+    name: 'Crypto Basket',
+    description: 'Diversified across all major crypto assets with stablecoin base',
+    targets: [
+      { asset: { symbol: 'CBTC', admin: '' }, targetPct: 30 },
+      { asset: { symbol: 'ETHx', admin: '' }, targetPct: 25 },
+      { asset: { symbol: 'SOLx', admin: '' }, targetPct: 15 },
+      { asset: { symbol: 'CC', admin: '' }, targetPct: 15 },
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 15 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '5.0' },
+    riskLevel: 'high',
+    tags: ['diversified', 'crypto', 'multi-asset'],
+  },
+  {
+    id: 'precious-metals',
+    name: 'Precious Metals',
+    description: 'Pure gold and silver allocation — classic safe haven',
+    targets: [
+      { asset: { symbol: 'XAUt', admin: '' }, targetPct: 60 },
+      { asset: { symbol: 'XAGt', admin: '' }, targetPct: 40 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '3.0' },
+    riskLevel: 'low',
+    tags: ['rwa', 'precious-metals', 'gold', 'silver'],
+  },
+  {
+    id: 'institutional',
+    name: 'Institutional Grade',
+    description: 'Treasury bonds core with gold hedge and crypto satellite',
+    targets: [
+      { asset: { symbol: 'USTb', admin: '' }, targetPct: 40 },
+      { asset: { symbol: 'XAUt', admin: '' }, targetPct: 25 },
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 20 },
+      { asset: { symbol: 'CBTC', admin: '' }, targetPct: 15 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '4.0' },
+    riskLevel: 'medium',
+    tags: ['institutional', 'bonds', 'treasury', 'rwa'],
+  },
+  {
+    id: 'stablecoin-yield',
+    name: 'Stablecoin Yield',
+    description: 'Capital preservation with CC exposure for platform rewards',
+    targets: [
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 70 },
+      { asset: { symbol: 'CC', admin: '' }, targetPct: 30 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '2.0' },
+    riskLevel: 'low',
+    tags: ['stablecoin', 'yield', 'safe'],
+  },
+  {
+    id: 'all-weather',
+    name: 'All Weather',
+    description: 'Ray Dalio inspired — performs in any market condition',
+    targets: [
+      { asset: { symbol: 'USTb', admin: '' }, targetPct: 30 },
+      { asset: { symbol: 'XAUt', admin: '' }, targetPct: 20 },
+      { asset: { symbol: 'CBTC', admin: '' }, targetPct: 20 },
+      { asset: { symbol: 'USDCx', admin: '' }, targetPct: 15 },
+      { asset: { symbol: 'ETHx', admin: '' }, targetPct: 15 },
+    ],
+    triggerMode: { tag: 'DriftThreshold', value: '5.0' },
+    riskLevel: 'medium',
+    tags: ['all-weather', 'balanced', 'multi-asset'],
+  },
+] as const;
+
+// ---------------------------------------------------------------------------
+// Admin party validation (non-localnet)
+// ---------------------------------------------------------------------------
+
+if (config.network !== 'localnet') {
+  const missingAdmins = Object.entries(INSTRUMENTS)
+    .filter(([_, inst]) => !inst.admin)
+    .map(([key]) => key);
+  if (missingAdmins.length > 0) {
+    throw new Error(`Missing admin party for instruments: ${missingAdmins.join(', ')}. Set CC_ADMIN_PARTY, USDCX_ADMIN_PARTY, CBTC_ADMIN_PARTY, ETHX_ADMIN_PARTY, SOLX_ADMIN_PARTY, XAUT_ADMIN_PARTY, XAGT_ADMIN_PARTY, USTB_ADMIN_PARTY, MMF_ADMIN_PARTY env vars.`);
+  }
+}

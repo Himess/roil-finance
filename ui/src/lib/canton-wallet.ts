@@ -1,3 +1,21 @@
+/**
+ * Canton Wallet Integration
+ *
+ * Supported wallet connections:
+ * 1. Canton Browser Extension (window.canton) — native Canton wallet
+ * 2. JSON API Direct Mode — for development/testing
+ *
+ * Future integrations:
+ * - @canton-network/dapp-sdk — official Canton dApp SDK
+ * - WalletConnect — for mobile wallet support
+ * - Ledger Hardware Wallet — via @ledgerhq/app-canton
+ *
+ * To add a new wallet provider:
+ * 1. Implement the CantonExtension interface (see canton.d.ts)
+ * 2. Add detection in connectExtension()
+ * 3. Add balance fetching in fetchBalancesViaExtension()
+ */
+
 // ---------------------------------------------------------------------------
 // Canton Wallet abstraction
 //
@@ -32,6 +50,10 @@ function buildDevJwt(party: string): string {
     aud: 'canton-json-api',
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 3600,
+    scope: 'daml_ledger_api',
+    actAs: [party],
+    readAs: [party],
+    applicationId: 'canton-rebalancer-ui',
   };
   const encode = (obj: unknown) =>
     btoa(JSON.stringify(obj))
@@ -75,8 +97,8 @@ export class CantonWallet {
   private jsonApiUrl: string;
   private devToken: string | null = null;
 
-  constructor(jsonApiUrl: string = 'http://localhost:7575') {
-    this.jsonApiUrl = jsonApiUrl;
+  constructor(options?: { jsonApiUrl?: string }) {
+    this.jsonApiUrl = options?.jsonApiUrl || 'http://localhost:3975';
   }
 
   // -----------------------------------------------------------------------
@@ -90,7 +112,7 @@ export class CantonWallet {
    */
   async connect(partyHint?: string): Promise<WalletState> {
     // Check for Canton browser extension
-    if (typeof window !== 'undefined' && (window as any).canton) {
+    if (typeof window !== 'undefined' && window.canton) {
       return this.connectViaExtension();
     }
     // Fallback: direct JSON API connection (dev mode)
@@ -113,7 +135,7 @@ export class CantonWallet {
     if (!this.state.connected || !this.state.party) return [];
 
     try {
-      if (typeof window !== 'undefined' && (window as any).canton) {
+      if (typeof window !== 'undefined' && window.canton) {
         return this.fetchBalancesViaExtension();
       }
       return this.fetchBalancesViaJsonApi();
@@ -129,19 +151,19 @@ export class CantonWallet {
    * In dev mode, submits directly via JSON API.
    */
   async submitTransaction(commands: unknown[]): Promise<unknown> {
-    if (typeof window !== 'undefined' && (window as any).canton) {
-      return (window as any).canton.request({
+    if (typeof window !== 'undefined' && window.canton) {
+      return window.canton.request({
         method: 'canton_submitTransaction',
         params: commands,
       });
     }
 
-    // Dev mode — submit via JSON API /v2/commands/submit
+    // Dev mode — submit via JSON API /v2/commands/submit-and-wait
     if (!this.devToken || !this.state.party) {
       throw new Error('Wallet not connected');
     }
 
-    const res = await fetch(`${this.jsonApiUrl}/v2/commands/submit`, {
+    const res = await fetch(`${this.jsonApiUrl}/v2/commands/submit-and-wait`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -150,6 +172,7 @@ export class CantonWallet {
       body: JSON.stringify({
         commands,
         actAs: [this.state.party],
+        readAs: [this.state.party],
       }),
     });
 
@@ -174,12 +197,17 @@ export class CantonWallet {
     return { ...this.state };
   }
 
+  /** Return the current dev JWT token (or null if not connected or using extension) */
+  getCurrentToken(): string | null {
+    return this.devToken;
+  }
+
   // -----------------------------------------------------------------------
   // Extension-based connection
   // -----------------------------------------------------------------------
 
   private async connectViaExtension(): Promise<WalletState> {
-    const canton = (window as any).canton;
+    const canton = window.canton!;
 
     try {
       const accounts: string[] = await canton.request({
@@ -216,7 +244,7 @@ export class CantonWallet {
   }
 
   private async fetchBalancesViaExtension(): Promise<TokenBalance[]> {
-    const canton = (window as any).canton;
+    const canton = window.canton!;
     const result = await canton.request({
       method: 'canton_getBalances',
     });
@@ -242,19 +270,11 @@ export class CantonWallet {
     // Try to verify the connection by querying the JSON API
     let verified = false;
     try {
-      const res = await fetch(`${this.jsonApiUrl}/v2/state/active-contracts`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.devToken}`,
-        },
-        body: JSON.stringify({
-          templateIds: [],
-          activeAtOffset: '',
-        }),
+      const endRes = await fetch(`${this.jsonApiUrl}/v2/state/ledger-end`, {
+        headers: { 'Authorization': `Bearer ${this.devToken}` },
         signal: AbortSignal.timeout(5000),
       });
-      verified = res.ok || res.status === 400; // 400 means reachable but bad query
+      verified = endRes.ok || endRes.status === 400; // 400 means reachable but bad query
     } catch {
       // JSON API not available — still allow connection in pure dev mode
     }
@@ -285,6 +305,17 @@ export class CantonWallet {
     if (!this.devToken || !this.state.party) return [];
 
     try {
+      // First fetch ledger-end offset
+      const endRes = await fetch(`${this.jsonApiUrl}/v2/state/ledger-end`, {
+        headers: { 'Authorization': `Bearer ${this.devToken}` },
+        signal: AbortSignal.timeout(5000),
+      });
+      const endData = await endRes.json();
+      const offset = endData.offset;
+
+      const templateId = '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
+
+      // Then query with correct v2 format
       const res = await fetch(`${this.jsonApiUrl}/v2/state/active-contracts`, {
         method: 'POST',
         headers: {
@@ -292,8 +323,15 @@ export class CantonWallet {
           Authorization: `Bearer ${this.devToken}`,
         },
         body: JSON.stringify({
-          templateIds: ['Splice.Wallet.Holding:Holding'],
-          activeAtOffset: '',
+          eventFormat: {
+            filtersByParty: {
+              [this.state.party!]: {
+                cumulative: [{ templateFilter: { value: templateId } }]
+              }
+            },
+            verbose: true,
+          },
+          activeAtOffset: offset,
         }),
         signal: AbortSignal.timeout(5000),
       });

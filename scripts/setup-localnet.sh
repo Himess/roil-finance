@@ -111,7 +111,7 @@ if [ -f "$PROJECT_DIR/docker-compose.override.yml" ]; then
   OVERRIDE_ARGS="-f $PROJECT_DIR/docker-compose.override.yml"
 fi
 
-docker compose up -d $OVERRIDE_ARGS
+docker compose -f docker-compose.yml $OVERRIDE_ARGS up -d
 
 # ---------------------------------------------------------------------------
 # 4. Wait for services to become healthy
@@ -163,9 +163,9 @@ upload_dar() {
 
   # Build an unsigned JWT for the upload (Canton sandbox accepts alg:none)
   local header
-  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local token="${header}.${payload}."
 
   local status
@@ -198,9 +198,9 @@ allocate_party() {
   local display="$3"
 
   local header
-  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 -w0 | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local token="${header}.${payload}."
 
   local result

@@ -1,5 +1,6 @@
 import { config, TEMPLATES } from '../config.js';
 import { ledger, extractCreatedContractId, type DamlContract } from '../ledger.js';
+import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -72,7 +73,7 @@ export class FeaturedAppEngine {
       if (configs.length > 0) {
         this.configCid = configs[0].contractId;
         const payload = configs[0].payload;
-        console.log(
+        logger.info(
           `[featured-app] Found existing config: appName=${payload.appName}, ` +
             `registered=${payload.isRegistered}, totalActivities=${payload.totalActivities}`,
         );
@@ -91,11 +92,12 @@ export class FeaturedAppEngine {
         );
 
         this.configCid = extractCreatedContractId(result);
-        console.log(`[featured-app] Created new config: ${this.configCid}`);
+        logger.info(`[featured-app] Created new config: ${this.configCid}`);
+        logger.info('[featured-app] Config created with isRegistered=false — register at https://sync.global/featured-app-request/ to earn CC rewards');
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[featured-app] Failed to initialize: ${message}`);
+      logger.error(`[featured-app] Failed to initialize: ${message}`);
     }
   }
 
@@ -125,7 +127,7 @@ export class FeaturedAppEngine {
     }
 
     if (!this.configCid) {
-      console.error('[featured-app] No config contract available, skipping activity recording');
+      logger.error('[featured-app] No config contract available, skipping activity recording');
       return;
     }
 
@@ -136,6 +138,7 @@ export class FeaturedAppEngine {
         'RecordActivity',
         {
           user,
+          activityId: `${activityType}-${user}-${Date.now()}`,
           activityType,
           description,
           timestamp: new Date().toISOString(),
@@ -153,15 +156,57 @@ export class FeaturedAppEngine {
         }
       }
 
-      console.log(
+      logger.info(
         `[featured-app] Recorded activity: type=${activityType}, user=${user}, desc="${description}"`,
       );
+
+      // Attempt to create real GSF activity marker
+      await this.createActivityMarkerIfRegistered(description);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[featured-app] Failed to record activity: ${message}`);
+      logger.error(`[featured-app] Failed to record activity: ${message}`);
 
       // Config contract may have been consumed — re-initialize on next call
       this.configCid = null;
+    }
+  }
+
+  // -----------------------------------------------------------------------
+  // GSF Activity Marker
+  // -----------------------------------------------------------------------
+
+  /**
+   * On the real Canton Network, this would exercise FeaturedAppRight_CreateActivityMarker
+   * from splice-api-featured-app-v1. For now, we record in our own contracts and
+   * prepare the call structure for when the GSF registration is complete.
+   */
+  async createActivityMarkerIfRegistered(
+    activityDescription: string,
+  ): Promise<void> {
+    if (config.network === 'localnet') return;
+
+    // Check if we have a FeaturedAppRight CID from GSF registration
+    const featuredAppRightCid = process.env.FEATURED_APP_RIGHT_CID;
+    if (!featuredAppRightCid) {
+      logger.debug('No FeaturedAppRight CID — skipping activity marker creation');
+      return;
+    }
+
+    try {
+      // Exercise FeaturedAppRight_CreateActivityMarker on the real network
+      await ledger.exercise(
+        '#splice-api-featured-app-v1:Splice.Api.FeaturedAppV1:FeaturedAppRight',
+        featuredAppRightCid,
+        'FeaturedAppRight_CreateActivityMarker',
+        {
+          provider: config.platformParty,
+          activityMarkerDescription: activityDescription,
+        },
+        [config.platformParty],
+      );
+      logger.info('Featured App activity marker created on GSF', { description: activityDescription });
+    } catch (err) {
+      logger.warn('Failed to create GSF activity marker', { error: String(err) });
     }
   }
 
@@ -209,7 +254,7 @@ export class FeaturedAppEngine {
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[featured-app] Failed to get summary: ${message}`);
+      logger.error(`[featured-app] Failed to get summary: ${message}`);
       return null;
     }
   }
@@ -232,7 +277,7 @@ export class FeaturedAppEngine {
         .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[featured-app] Failed to get user activities: ${message}`);
+      logger.error(`[featured-app] Failed to get user activities: ${message}`);
       return [];
     }
   }
@@ -252,7 +297,7 @@ export class FeaturedAppEngine {
     }
 
     if (!this.configCid) {
-      console.error('[featured-app] No config contract available');
+      logger.error('[featured-app] No config contract available');
       return;
     }
 
@@ -269,12 +314,12 @@ export class FeaturedAppEngine {
       );
 
       this.configCid = extractCreatedContractId(result);
-      console.log(
+      logger.info(
         `[featured-app] Updated registration: registered=${isRegistered}, rightCid=${featuredAppRightCid}`,
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[featured-app] Failed to update registration: ${message}`);
+      logger.error(`[featured-app] Failed to update registration: ${message}`);
       this.configCid = null;
     }
   }

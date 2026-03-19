@@ -167,6 +167,16 @@ export function useUpdateTargets() {
 }
 
 /**
+ * Estimate rebalance transaction cost.
+ * POST /api/portfolio/:id/estimate-cost
+ */
+export function useEstimateCost() {
+  return useMutation<{ contractId: string }, { estimatedCost: number | null; note?: string }>(
+    (input) => `/api/portfolio/${encodeURIComponent(input.contractId)}/estimate-cost`,
+  );
+}
+
+/**
  * Trigger a manual rebalance for a specific portfolio.
  * POST /api/portfolio/:id/rebalance
  */
@@ -178,15 +188,10 @@ export function useRebalance() {
 }
 
 /**
- * Calculate current drift for a specific portfolio.
- * GET /api/portfolio/:id/drift
+ * Calculate current drift from portfolio data.
+ * Accepts the portfolio object directly to avoid a duplicate fetch.
  */
-export function useDrift(party?: string) {
-  // We first need the portfolio to get both the local calculation and, if available,
-  // the portfolio ID for a server-side drift check. For now, compute client-side
-  // from the portfolio data (same as before) so this works with or without backend.
-  const { portfolio } = usePortfolio(party);
-
+export function useDrift(portfolio: Portfolio) {
   const drift = useMemo(() => {
     if (!portfolio) return 0;
     const { targets, holdings } = portfolio;
@@ -204,6 +209,48 @@ export function useDrift(party?: string) {
   }, [portfolio]);
 
   return { drift, isLoading: false };
+}
+
+/**
+ * Fetch performance summary and history for a party.
+ * GET /api/portfolio/:party/performance
+ */
+
+interface PerformanceSummary {
+  current: number;
+  change24h: number;
+  change7d: number;
+  change30d: number;
+  high30d: number;
+  low30d: number;
+}
+
+interface PerformanceSnapshot {
+  timestamp: string;
+  totalValueCc: number;
+  holdings: { asset: string; amount: number; valueCc: number }[];
+}
+
+interface PerformanceData {
+  summary: PerformanceSummary;
+  history: PerformanceSnapshot[];
+}
+
+const DEMO_PERFORMANCE: PerformanceData = {
+  summary: { current: 15420, change24h: 2.3, change7d: 5.1, change30d: 12.7, high30d: 16000, low30d: 13500 },
+  history: [],
+};
+
+export function usePerformance(party?: string) {
+  const query = useQuery<PerformanceData>(
+    party ? `/api/portfolio/${encodeURIComponent(party)}/performance` : null,
+    [party],
+  );
+
+  return {
+    ...query,
+    data: query.data ?? DEMO_PERFORMANCE,
+  };
 }
 
 /**

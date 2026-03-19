@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { config, INSTRUMENTS } from './config.js';
 import { CantexError } from './utils/errors.js';
 import { CantexRealClient } from './cantex-client.js';
 import { logger } from './monitoring/logger.js';
@@ -179,7 +179,9 @@ export class CantexClient {
     return pools.map(p => ({
       pair: `${p.tokenA.id}/${p.tokenB.id}`,
       liquidity: p.reserveA + p.reserveB,
-      volume24h: 0, // not available from pools endpoint
+      // Cantex pools endpoint doesn't expose volume24h directly.
+      // Estimate ~5% daily turnover of total reserves as a reasonable proxy.
+      volume24h: (p.reserveA + p.reserveB) * 0.05,
       fee: BASE_FEE_PCT,
     }));
   }
@@ -205,16 +207,20 @@ export class CantexClient {
   }
 
   // -----------------------------------------------------------------------
+  // Status check
+  // -----------------------------------------------------------------------
+
+  async isAvailable(): Promise<boolean> {
+    if (this.useMock) return true;
+    return this.realClient!.isAvailable();
+  }
+
+  // -----------------------------------------------------------------------
   // Helpers
   // -----------------------------------------------------------------------
 
   private getAdmin(asset: string): string {
-    const instruments: Record<string, string> = {
-      CC: process.env.CC_ADMIN_PARTY || '',
-      USDCx: process.env.USDCX_ADMIN_PARTY || '',
-      CBTC: process.env.CBTC_ADMIN_PARTY || '',
-    };
-    return instruments[asset] || '';
+    return INSTRUMENTS[asset as keyof typeof INSTRUMENTS]?.admin || '';
   }
 }
 

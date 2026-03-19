@@ -21,35 +21,40 @@ const TIER_CONFIG: Record<
     border: string;
     text: string;
     glow: string;
+    barBg: string;
   }
 > = {
   Bronze: {
     icon: Award,
-    gradient: 'from-amber-700 to-amber-900',
-    border: 'border-amber-700/50',
-    text: 'text-amber-500',
-    glow: 'shadow-amber-900/20',
+    gradient: 'from-amber-600 to-amber-800',
+    border: 'border-amber-300',
+    text: 'text-amber-700',
+    glow: '',
+    barBg: 'from-amber-500 to-amber-700',
   },
   Silver: {
     icon: Star,
-    gradient: 'from-slate-300 to-slate-500',
-    border: 'border-slate-400/50',
-    text: 'text-slate-300',
-    glow: 'shadow-slate-400/20',
+    gradient: 'from-gray-400 to-gray-500',
+    border: 'border-gray-300',
+    text: 'text-gray-600',
+    glow: '',
+    barBg: 'from-gray-400 to-gray-500',
   },
   Gold: {
     icon: Crown,
-    gradient: 'from-yellow-400 to-yellow-600',
-    border: 'border-yellow-500/50',
-    text: 'text-yellow-400',
-    glow: 'shadow-yellow-500/20',
+    gradient: 'from-yellow-500 to-yellow-600',
+    border: 'border-yellow-300',
+    text: 'text-yellow-600',
+    glow: '',
+    barBg: 'from-yellow-400 to-yellow-600',
   },
   Platinum: {
     icon: Gem,
-    gradient: 'from-cyan-300 to-blue-500',
-    border: 'border-cyan-400/50',
-    text: 'text-cyan-400',
-    glow: 'shadow-cyan-500/20',
+    gradient: 'from-cyan-500 to-blue-600',
+    border: 'border-cyan-300',
+    text: 'text-cyan-600',
+    glow: '',
+    barBg: 'from-cyan-400 to-blue-500',
   },
 };
 
@@ -70,8 +75,6 @@ export default function RewardTierBadge({
       className={clsx(
         'card border',
         config.border,
-        'shadow-lg',
-        config.glow,
         className,
       )}
     >
@@ -86,14 +89,14 @@ export default function RewardTierBadge({
           <Icon className="w-7 h-7 text-white" />
         </div>
         <div>
-          <p className="text-xs text-slate-500 uppercase tracking-wider font-medium">
+          <p className="text-sm text-ink-muted uppercase tracking-wider font-medium">
             Current Tier
           </p>
-          <p className={clsx('text-2xl font-bold', config.text)}>{tier}</p>
+          <p className={clsx('text-3xl font-bold', config.text)}>{tier}</p>
         </div>
         <div className="ml-auto text-right">
-          <p className="text-xs text-slate-500">Fee Rebate</p>
-          <p className={clsx('text-lg font-bold', config.text)}>
+          <p className="text-sm text-ink-muted">Fee Rebate</p>
+          <p className={clsx('text-xl font-bold', config.text)}>
             {feeRebatePct}%
           </p>
         </div>
@@ -102,27 +105,27 @@ export default function RewardTierBadge({
       {/* Progress bar to next tier */}
       {nextTier && (
         <div>
-          <div className="flex items-center justify-between text-xs mb-2">
-            <span className="text-slate-400">
+          <div className="flex items-center justify-between text-sm mb-2">
+            <span className="text-ink-secondary">
               {txCount} TX this month
             </span>
-            <span className="text-slate-500">
+            <span className="text-ink-muted">
               {txToNextTier} TX to{' '}
               <span className={TIER_CONFIG[nextTier].text}>{nextTier}</span>
             </span>
           </div>
 
-          <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+          <div className="h-2 bg-surface-muted rounded-full overflow-hidden">
             <div
               className={clsx(
                 'h-2 rounded-full bg-gradient-to-r transition-all duration-700',
-                config.gradient,
+                config.barBg,
               )}
               style={{ width: `${progressPct}%` }}
             />
           </div>
 
-          <div className="flex items-center justify-between text-[10px] text-slate-600 mt-1">
+          <div className="flex items-center justify-between text-sm text-ink-secondary mt-1">
             <span>{TIER_THRESHOLDS[tier].min} TX</span>
             <span>{TIER_THRESHOLDS[nextTier].min} TX</span>
           </div>
@@ -131,10 +134,10 @@ export default function RewardTierBadge({
 
       {!nextTier && (
         <div className="text-center py-2">
-          <p className="text-sm text-cyan-400 font-medium">
+          <p className="text-base text-cyan-600 font-medium">
             Maximum tier reached
           </p>
-          <p className="text-xs text-slate-500 mt-1">
+          <p className="text-base text-ink-muted mt-1">
             Enjoying the highest fee rebate!
           </p>
         </div>

@@ -70,6 +70,7 @@ testSwapFlow = script do
       buyAsset = "USDCx"
       buyAdmin = usdcxAdmin
       buyAmount = 150.0
+      minBuyAmount = 140.0
       status = Pending
       createdAt = "2026-03-15T11:00:00Z"
 
@@ -184,6 +185,7 @@ testCancelSwap = script do
       buyAsset = "CBTC"
       buyAdmin = cbtcAdmin
       buyAmount = 0.02
+      minBuyAmount = 0.018
       status = Pending
       createdAt = "2026-03-15T14:00:00Z"
 
@@ -234,6 +236,7 @@ testMultipleOperations = script do
       platform; user = alice
       sellAsset = "CC"; sellAdmin = tokenAdmin; sellAmount = 500.0
       buyAsset = "USDCx"; buyAdmin = tokenAdmin; buyAmount = 75.0
+      minBuyAmount = 70.0
       status = Pending; createdAt = "2026-03-15T12:00:00Z"
   submit platform do
     exerciseCmd s1 ExecuteSwap with
@@ -303,6 +306,7 @@ testCBTCSwap = script do
       platform; user = alice
       sellAsset = "USDCx"; sellAdmin = usdcxAdmin; sellAmount = 40.0
       buyAsset = "CBTC"; buyAdmin = cbtcAdmin; buyAmount = 0.001
+      minBuyAmount = 0.0009
       status = Pending; createdAt = "2026-03-15T16:00:00Z"
 
   logCid <- submit platform do
@@ -316,5 +320,46 @@ testCBTCSwap = script do
   let (_, log) = head logs
   assertMsg "Buy asset is CBTC" (log.buyAsset == "CBTC")
   assertMsg "Actual buy amount is 0.00098" (log.buyAmount == 0.00098)
+
+  pure ()
+
+-- | Test: Slippage protection — swap should fail if actual buy amount is below minimum
+testSlippageRejection : Script ()
+testSlippageRejection = script do
+  -- Setup parties
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  ccAdmin <- allocateParty "CCAdmin"
+  usdcxAdmin <- allocateParty "USDCxAdmin"
+
+  -- Create a swap request with a high minBuyAmount
+  swapCid <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform
+      user = alice
+      sellAsset = "CC"
+      sellAdmin = ccAdmin
+      sellAmount = 1000.0
+      buyAsset = "USDCx"
+      buyAdmin = usdcxAdmin
+      buyAmount = 150.0
+      minBuyAmount = 145.0
+      status = Pending
+      createdAt = "2026-03-15T17:00:00Z"
+
+  -- Should fail: actualBuyAmount (130.0) < minBuyAmount (145.0)
+  submitMustFail platform do
+    exerciseCmd swapCid ExecuteSwap with
+      actualBuyAmount = 130.0
+      executedAt = "2026-03-15T17:00:05Z"
+
+  -- Should succeed: actualBuyAmount (148.0) >= minBuyAmount (145.0)
+  logCid <- submit platform do
+    exerciseCmd swapCid ExecuteSwap with
+      actualBuyAmount = 148.0
+      executedAt = "2026-03-15T17:00:10Z"
+
+  logs <- query @SwapLog alice
+  assertMsg "Should have 1 swap log" (length logs == 1)
 
   pure ()

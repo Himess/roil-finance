@@ -35,6 +35,26 @@ export interface ActiveContractsResult<T = Record<string, unknown>> {
   offset: number;
 }
 
+/** Shape returned by the v2 /state/active-contracts endpoint */
+export interface ActiveContractsResponse {
+  contractEntry?: {
+    JsActiveContract?: {
+      createdEvent: {
+        contractId: string;
+        templateId: string;
+        createArgument?: Record<string, unknown>;
+        createArguments?: Record<string, unknown>;
+        createdEventBlob?: string;
+      };
+    };
+  };
+  contractId?: string;
+  templateId?: string;
+  createArgument?: Record<string, unknown>;
+  createArguments?: Record<string, unknown>;
+  createdEventBlob?: string;
+}
+
 // ---------------------------------------------------------------------------
 // JWT Builder — supports multiple signing modes
 // ---------------------------------------------------------------------------
@@ -202,6 +222,7 @@ export class DamlLedger {
     actAs: string[],
     commandId?: string,
   ): Promise<SubmitResult> {
+    const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
     return this.post<SubmitResult>(
       '/v2/commands/submit-and-wait',
       {
@@ -210,7 +231,7 @@ export class DamlLedger {
         }],
         userId: config.ledgerUserId,
         actAs,
-        commandId: commandId ?? `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        commandId: finalCommandId,
       },
       actAs,
     );
@@ -227,6 +248,7 @@ export class DamlLedger {
     actAs: string[],
     commandId?: string,
   ): Promise<SubmitResult> {
+    const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
     return this.post<SubmitResult>(
       '/v2/commands/submit-and-wait',
       {
@@ -235,7 +257,7 @@ export class DamlLedger {
         }],
         userId: config.ledgerUserId,
         actAs,
-        commandId: commandId ?? `cmd-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        commandId: finalCommandId,
       },
       actAs,
     );
@@ -262,7 +284,7 @@ export class DamlLedger {
     // Get current ledger end offset (required by v2 API)
     const ledgerEnd = await this.get<{ offset: number }>('/v2/state/ledger-end', actAs);
 
-    const result = await this.post<any>(
+    const result = await this.post<{ activeContracts?: ActiveContractsResponse[] } | ActiveContractsResponse[]>(
       '/v2/state/active-contracts',
       {
         eventFormat: { filtersByParty: filters, verbose: true },
@@ -272,9 +294,11 @@ export class DamlLedger {
     );
 
     // v2 API returns array of { contractEntry: { JsActiveContract: { createdEvent: {...} } } }
-    const rawContracts = Array.isArray(result) ? result : (result.activeContracts || []);
+    const rawContracts: ActiveContractsResponse[] = Array.isArray(result)
+      ? result
+      : ((result as { activeContracts?: ActiveContractsResponse[] }).activeContracts || []);
 
-    return rawContracts.map((item: any) => {
+    return rawContracts.map((item: ActiveContractsResponse) => {
       // Handle v2 nested format
       const event = item?.contractEntry?.JsActiveContract?.createdEvent ?? item;
       return {
@@ -393,29 +417,14 @@ export class DamlLedger {
   // Convenience wrappers (accept single party string for backwards compat)
   // -----------------------------------------------------------------------
 
-  /** Create — accepts single party string, returns contract ID via post-query */
+  /** Create — accepts single party string, returns contract ID */
   async createAs(
     templateId: string,
     createArguments: Record<string, unknown>,
     party: string,
   ): Promise<string> {
-    // submit-and-wait only returns updateId, not the created contract
-    // We query active contracts after creation to find the new one
-    const beforeContracts = await this.query(templateId, party);
-    const beforeIds = new Set(beforeContracts.map(c => c.contractId));
-
-    await this.create(templateId, createArguments, [party]);
-
-    // Query again and find the new contract
-    const afterContracts = await this.query(templateId, party);
-    const newContract = afterContracts.find(c => !beforeIds.has(c.contractId));
-
-    if (newContract) return newContract.contractId;
-
-    // Fallback: return the latest contract ID
-    if (afterContracts.length > 0) return afterContracts[afterContracts.length - 1].contractId;
-
-    throw new Error('Created contract not found after submission');
+    const result = await this.create(templateId, createArguments, [party]);
+    return extractCreatedContractId(result);
   }
 
   /** Exercise — accepts single party string, returns exercise result */
@@ -426,10 +435,8 @@ export class DamlLedger {
     choiceArgument: Record<string, unknown>,
     party: string,
   ): Promise<R> {
-    await this.exercise(templateId, contractId, choice, choiceArgument, [party]);
-    // submit-and-wait doesn't return exercise result directly
-    // Return the completion offset as a minimal result
-    return undefined as unknown as R;
+    const result = await this.exercise(templateId, contractId, choice, choiceArgument, [party]);
+    return extractExerciseResult<R>(result);
   }
 
   /** Query — already takes single party, re-export for clarity */

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { useQuery } from './useApi';
 import type { MarketPrice, Pool } from '@/types';
 
@@ -65,12 +66,17 @@ interface PoolsResponse {
 export function useMarketPrices() {
   const query = useQuery<PricesResponse>('/api/market/prices');
 
-  const prices = query.data?.prices ?? DEMO_PRICES;
+  const prices = Array.isArray(query.data?.prices) ? query.data.prices : DEMO_PRICES;
 
-  const priceMap = new Map<string, number>();
-  for (const p of prices) {
-    priceMap.set(p.symbol, p.priceUsd);
-  }
+  const priceMap = useMemo(() => {
+    const m = new Map<string, number>();
+    if (Array.isArray(prices)) {
+      for (const p of prices) {
+        m.set(p.symbol, p.priceUsd);
+      }
+    }
+    return m;
+  }, [prices]);
 
   return {
     prices,

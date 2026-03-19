@@ -126,20 +126,28 @@ function ed25519PublicKey(privateKeyHex: string): string {
 
 function secp256k1Sign(digestHex: string, privateKeyHex: string): string {
   const privateKey = Buffer.from(privateKeyHex, 'hex');
+
+  // Derive the uncompressed public key from the private key using ECDH
+  const ecdh = crypto.createECDH('secp256k1');
+  ecdh.setPrivateKey(privateKey);
+  const publicKey = ecdh.getPublicKey(); // 65 bytes uncompressed
+
+  // Build a SEC1 DER-encoded key with the actual public key
   const keyObject = crypto.createPrivateKey({
     key: Buffer.concat([
-      // secp256k1 PKCS8 prefix (SEC1 wrapped)
+      // secp256k1 SEC1 prefix: SEQUENCE { INTEGER(1), OCTET STRING(32 bytes privkey),
+      //   [0] OID(secp256k1), [1] BIT STRING(65 bytes pubkey) }
       Buffer.from('30740201010420', 'hex'),
       privateKey,
       Buffer.from('a00706052b8104000aa144034200', 'hex'),
-      // We need the public key here — compute it
-      Buffer.alloc(65), // placeholder, will use different approach
+      publicKey,
     ]),
     format: 'der',
     type: 'sec1',
   });
 
-  const sig = crypto.sign('sha256', Buffer.from(digestHex, 'hex'), {
+  // The digest is already hashed, so sign it directly without re-hashing
+  const sig = crypto.sign(null, Buffer.from(digestHex, 'hex'), {
     key: keyObject,
     dsaEncoding: 'der',
   });
@@ -435,7 +443,7 @@ export class CantexRealClient {
       const res = await fetch(`${this.baseUrl}/v2/pools/info`, {
         signal: AbortSignal.timeout(5000),
       });
-      return res.status !== 0;
+      return res.ok;
     } catch {
       return false;
     }

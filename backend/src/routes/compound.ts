@@ -1,6 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
 import { compoundEngine, type CompoundConfig } from '../engine/compound.js';
+import { requireParty } from '../middleware/auth.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -25,7 +26,7 @@ export const compoundRouter = Router();
  * Get current yield summary for a party, including all yield sources,
  * total daily yield, weighted APY, and next compound time.
  */
-compoundRouter.get('/:party/yields', async (req: Request, res: Response) => {
+compoundRouter.get('/:party/yields', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const summary = await compoundEngine.getYieldSummary(party!);
@@ -37,12 +38,27 @@ compoundRouter.get('/:party/yields', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/compound/:party/projected
+ *
+ * Get projected yield sources for a party (without executing compound).
+ */
+compoundRouter.get('/:party/projected', requireParty('party'), async (req, res) => {
+  try {
+    const { party } = req.params as Record<string, string>;
+    const yields = await compoundEngine.detectYields(party!);
+    res.json({ success: true, data: yields });
+  } catch (err: any) {
+    res.json({ success: true, data: null });
+  }
+});
+
+/**
  * POST /api/compound/:party/execute
  *
  * Trigger a manual compound for a party. Uses the party's current
  * compound configuration, or a default config if none is set.
  */
-compoundRouter.post('/:party/execute', async (req: Request, res: Response) => {
+compoundRouter.post('/:party/execute', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const cfg = compoundEngine.getConfig(party!);
@@ -72,7 +88,7 @@ compoundRouter.post('/:party/execute', async (req: Request, res: Response) => {
  *
  * Get compound execution history for a party.
  */
-compoundRouter.get('/:party/history', async (req: Request, res: Response) => {
+compoundRouter.get('/:party/history', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const history = await compoundEngine.getCompoundHistory(party!);
@@ -84,11 +100,27 @@ compoundRouter.get('/:party/history', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/compound/:party/config
+ *
+ * Get the current compound configuration for a party.
+ */
+compoundRouter.get('/:party/config', requireParty('party'), async (req: Request, res: Response) => {
+  try {
+    const { party } = req.params as Record<string, string>;
+    const cfg = compoundEngine.getConfig(party!);
+    res.json({ success: true, data: cfg });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
+  }
+});
+
+/**
  * PUT /api/compound/:party/config
  *
  * Update the compound configuration for a party.
  */
-compoundRouter.put('/:party/config', async (req: Request, res: Response) => {
+compoundRouter.put('/:party/config', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const parsed = CompoundConfigSchema.safeParse(req.body);

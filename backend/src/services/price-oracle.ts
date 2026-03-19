@@ -1,4 +1,6 @@
 import { cantex } from '../cantex.js';
+import { INSTRUMENTS } from '../config.js';
+import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -28,13 +30,25 @@ interface HistoryPoint {
 // Fallback prices — used when Cantex is unreachable
 // ---------------------------------------------------------------------------
 
+/**
+ * Emergency fallback prices used when Cantex is completely unreachable
+ * and no cached prices exist. These are approximate values and should
+ * only be used as a last resort. In production, the hot cache and
+ * stale cache tiers should handle most outage scenarios.
+ */
 const FALLBACK_PRICES: Record<string, number> = {
   CC: 0.15,
   USDCx: 1.0,
   CBTC: 40_000.0,
+  ETHx: 2_500.0,
+  SOLx: 150.0,
+  XAUt: 2_300.0,
+  XAGt: 28.0,
+  USTb: 1.0,
+  MMF: 1.0,
 };
 
-const SUPPORTED_ASSETS = ['CC', 'USDCx', 'CBTC'];
+const SUPPORTED_ASSETS = Object.keys(INSTRUMENTS);
 
 // ---------------------------------------------------------------------------
 // PriceOracle
@@ -53,6 +67,9 @@ const SUPPORTED_ASSETS = ['CC', 'USDCx', 'CBTC'];
 export class PriceOracle {
   private cache = new Map<string, CacheEntry>();
   private readonly CACHE_TTL: number;
+  // Price history is intentionally in-memory for performance.
+  // Data survives as long as the process runs; lost on restart.
+  // For production, consider TimescaleDB or InfluxDB integration.
   private priceHistory = new Map<string, HistoryPoint[]>();
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -219,7 +236,7 @@ export class PriceOracle {
       return; // Already polling
     }
 
-    console.log(`[price-oracle] Starting price polling (interval=${intervalMs}ms)`);
+    logger.info(`[price-oracle] Starting price polling (interval=${intervalMs}ms)`);
 
     // Initial fetch
     void this.pollOnce();
@@ -236,7 +253,7 @@ export class PriceOracle {
     if (this.pollingInterval) {
       clearInterval(this.pollingInterval);
       this.pollingInterval = null;
-      console.log('[price-oracle] Stopped price polling');
+      logger.info('[price-oracle] Stopped price polling');
     }
   }
 
@@ -320,7 +337,9 @@ export class PriceOracle {
 
       for (const pool of pools) {
         if (pool.pair.includes(asset)) {
-          totalVolume += pool.volume24h;
+          // Use reported volume, or estimate ~5% of pool liquidity if unavailable
+          const volume = pool.volume24h || pool.liquidity * 0.05;
+          totalVolume += volume;
         }
       }
 
@@ -359,7 +378,7 @@ export class PriceOracle {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[price-oracle] Polling error: ${message}`);
+      logger.error(`[price-oracle] Polling error: ${message}`);
     }
   }
 }

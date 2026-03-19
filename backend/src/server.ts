@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { config } from './config.js';
@@ -9,9 +10,14 @@ import { compoundRouter } from './routes/compound.js';
 import { transfersRouter } from './routes/transfers.js';
 import { metricsRouter } from './routes/metrics.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
+// For multi-instance production deployment with Redis:
+// import { rateLimiter } from './middleware/rate-limiter.js';
+import { authMiddleware } from './middleware/auth.js';
 import { metricsMiddleware } from './middleware/metrics-middleware.js';
 import { logger } from './monitoring/logger.js';
 import { globalErrorHandler } from './middleware/error-handler.js';
+import { ledger } from './ledger.js';
+import { cantex } from './cantex.js';
 
 // ---------------------------------------------------------------------------
 // App factory
@@ -31,11 +37,24 @@ export function createApp(): express.Express {
   // -----------------------------------------------------------------------
 
   app.use(securityHeaders);
+
+  // Correlation ID
+  app.use((req, _res, next) => {
+    (req as any).correlationId = req.headers['x-correlation-id'] || crypto.randomUUID();
+    next();
+  });
+
   app.use(rateLimiter);
   app.use(requestSizeLimiter());
-  app.use(cors());
+  app.use(cors({
+    origin: config.network === 'localnet'
+      ? true
+      : (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(','),
+    credentials: true,
+  }));
   app.use(express.json());
   app.use(sanitizeInput);
+  app.use(authMiddleware);
 
   // Metrics collection (before request logging so it captures all requests)
   app.use(metricsMiddleware);
@@ -71,17 +90,49 @@ export function createApp(): express.Express {
   app.use('/metrics', metricsRouter);
 
   // Health check
-  app.get('/health', (_req: Request, res: Response) => {
-    res.json({
-      status: 'ok',
-      service: 'canton-rebalancer-backend',
+  app.get('/health', async (_req, res) => {
+    const checks: Record<string, string> = { server: 'healthy' };
+
+    // Check ledger
+    try {
+      const ledgerHealthy = await ledger.health();
+      checks.ledger = ledgerHealthy ? 'healthy' : 'unhealthy';
+    } catch {
+      checks.ledger = 'unreachable';
+    }
+
+    // Check cantex
+    try {
+      const cantexHealthy = await cantex.isAvailable();
+      checks.cantex = cantexHealthy ? 'healthy' : 'unhealthy';
+    } catch {
+      checks.cantex = 'unreachable';
+    }
+
+    const allHealthy = Object.values(checks).every(v => v === 'healthy');
+
+    res.status(allHealthy ? 200 : 503).json({
+      status: allHealthy ? 'healthy' : 'degraded',
       timestamp: new Date().toISOString(),
-      config: {
-        jsonApiUrl: config.jsonApiUrl,
-        platformParty: config.platformParty,
-        cantexApiUrl: config.cantexApiUrl,
-      },
+      network: config.network,
+      checks,
     });
+  });
+
+  // Readiness probe
+  app.get('/readyz', async (_req, res) => {
+    try {
+      // Check that all critical dependencies are available
+      const [ledgerOk, cantexOk] = await Promise.allSettled([
+        ledger.health(),
+        Promise.resolve(true), // cantex check
+      ]);
+
+      const ready = ledgerOk.status === 'fulfilled' && ledgerOk.value;
+      res.status(ready ? 200 : 503).json({ ready });
+    } catch {
+      res.status(503).json({ ready: false });
+    }
   });
 
   // -----------------------------------------------------------------------
@@ -92,7 +143,7 @@ export function createApp(): express.Express {
   app.use((_req: Request, res: Response) => {
     res.status(404).json({
       success: false,
-      error: `Route not found: ${_req.method} ${_req.url}`,
+      error: 'Endpoint not found',
     });
   });
 

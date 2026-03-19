@@ -1,6 +1,8 @@
 import { Router, type Request, type Response } from 'express';
 import { z } from 'zod';
+import { config } from '../config.js';
 import { tokenTransferService } from '../services/token-transfer.js';
+import { requireParty } from '../middleware/auth.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -11,7 +13,7 @@ const SwapSchema = z.object({
   sellAsset: z.string().min(1),
   sellAmount: z.number().positive(),
   buyAsset: z.string().min(1),
-  expectedBuyAmount: z.number().nonnegative(),
+  expectedBuyAmount: z.number().positive(),
 });
 
 const TransferSchema = z.object({
@@ -35,7 +37,7 @@ export const transfersRouter = Router();
  * In network mode, queries real Holdings from the Canton ledger.
  * In internal mode, queries Cantex balances.
  */
-transfersRouter.get('/:party/holdings', async (req: Request, res: Response) => {
+transfersRouter.get('/:party/holdings', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const holdings = await tokenTransferService.queryHoldings(party!);
@@ -70,6 +72,14 @@ transfersRouter.post('/swap', async (req: Request, res: Response) => {
     }
 
     const { user, sellAsset, sellAmount, buyAsset, expectedBuyAmount } = parsed.data;
+
+    // Authorization: verify the caller can act as the specified user
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      if (user && !actAs.includes(user)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this party' });
+      }
+    }
 
     if (sellAsset === buyAsset) {
       res.status(400).json({ success: false, error: 'Sell and buy assets must be different' });
@@ -112,6 +122,14 @@ transfersRouter.post('/send', async (req: Request, res: Response) => {
 
     const { sender, receiver, instrumentId, amount, memo } = parsed.data;
 
+    // Authorization: verify the caller can act as the sender
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      if (sender && !actAs.includes(sender)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this party' });
+      }
+    }
+
     if (sender === receiver) {
       res.status(400).json({ success: false, error: 'Sender and receiver must be different' });
       return;
@@ -144,12 +162,34 @@ transfersRouter.post('/send', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/transfers/:party/export
+ *
+ * Export combined transfer and swap history for a party as CSV.
+ */
+transfersRouter.get('/:party/export', requireParty('party'), async (req: Request, res: Response) => {
+  try {
+    const { party } = req.params as Record<string, string>;
+    const history = await tokenTransferService.getTransferHistory(party!);
+
+    const csv = ['Type,Timestamp,Details']
+      .concat(history.map(h => `${h.type},${h.timestamp},"${JSON.stringify(h.details).replace(/"/g, '""')}"`))
+      .join('\n');
+
+    res.setHeader('Content-Type', 'text/csv');
+    res.setHeader('Content-Disposition', `attachment; filename=canton-rebalancer-${party!.slice(0, 8)}-history.csv`);
+    res.send(csv);
+  } catch (err: any) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/**
  * GET /api/transfers/:party/history
  *
  * Get combined transfer and swap history for a party.
  * Returns TransferLog and SwapLog entries sorted by timestamp (newest first).
  */
-transfersRouter.get('/:party/history', async (req: Request, res: Response) => {
+transfersRouter.get('/:party/history', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const history = await tokenTransferService.getTransferHistory(party!);
@@ -173,7 +213,7 @@ transfersRouter.get('/:party/history', async (req: Request, res: Response) => {
  *
  * Get pending transfers and swaps for a party.
  */
-transfersRouter.get('/:party/pending', async (req: Request, res: Response) => {
+transfersRouter.get('/:party/pending', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
 

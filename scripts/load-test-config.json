@@ -1,0 +1,43 @@
+{
+  "name": "Canton Rebalancer Load Test",
+  "scenarios": [
+    {
+      "name": "Health Check Burst",
+      "endpoint": "/health",
+      "method": "GET",
+      "requests": 500,
+      "concurrency": 50,
+      "expectedStatus": [200]
+    },
+    {
+      "name": "Portfolio Query",
+      "endpoint": "/api/portfolio/test-party",
+      "method": "GET",
+      "requests": 200,
+      "concurrency": 20,
+      "expectedStatus": [200]
+    },
+    {
+      "name": "Template Listing",
+      "endpoint": "/api/portfolio/templates",
+      "method": "GET",
+      "requests": 100,
+      "concurrency": 10,
+      "expectedStatus": [200]
+    },
+    {
+      "name": "Rate Limit Test",
+      "endpoint": "/health",
+      "method": "GET",
+      "requests": 150,
+      "concurrency": 150,
+      "expectedStatus": [200, 429],
+      "expectThrottled": true
+    }
+  ],
+  "thresholds": {
+    "p95_latency_ms": 500,
+    "error_rate_pct": 1,
+    "min_throughput_rps": 50
+  }
+}

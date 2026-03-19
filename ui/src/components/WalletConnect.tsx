@@ -22,6 +22,7 @@ export default function WalletConnect() {
     disconnect,
     refreshBalances,
     isExtensionAvailable,
+    isSDKConnected,
     isConnecting,
     error,
   } = useWallet();
@@ -81,9 +82,10 @@ export default function WalletConnect() {
     await refreshBalances();
   };
 
-  // ------- Total balance summary -------
+  // ------- CC balance summary -------
 
-  const totalBalance = balances.reduce((acc, b) => acc + b.amount, 0);
+  const ccBalance = balances.find((b) => b.instrumentId === 'CC');
+  const ccTotal = ccBalance ? ccBalance.amount : null;
 
   // ------- Render: Disconnected state -------
 
@@ -93,7 +95,7 @@ export default function WalletConnect() {
         {/* Dev mode hint input */}
         {showHintInput && !isExtensionAvailable && (
           <div className="mb-2">
-            <label className="text-xs text-slate-500 block mb-1">
+            <label className="text-sm text-ink-muted block mb-1">
               Party ID (dev mode)
             </label>
             <input
@@ -104,14 +106,14 @@ export default function WalletConnect() {
                 if (e.key === 'Enter') handleConnectWithHint();
               }}
               placeholder="e.g. Alice::1220..."
-              className="w-full bg-slate-900 border border-slate-600 rounded px-2 py-1.5 text-xs text-slate-300 font-mono focus:outline-none focus:ring-1 focus:ring-blue-500 mb-1.5"
+              className="w-full bg-surface border border-surface-border rounded px-2 py-1.5 text-sm text-ink font-mono focus:outline-none focus:ring-1 focus:ring-accent mb-1.5"
               spellCheck={false}
             />
             <div className="flex gap-1.5">
               <button
                 onClick={handleConnectWithHint}
                 disabled={isConnecting}
-                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium py-1.5 px-2 rounded transition-colors disabled:opacity-50"
+                className="flex-1 bg-accent hover:bg-accent-hover text-white text-sm font-medium py-1.5 px-2 rounded transition-colors disabled:opacity-50"
               >
                 {isConnecting ? 'Connecting...' : 'Connect'}
               </button>
@@ -120,7 +122,7 @@ export default function WalletConnect() {
                   setShowHintInput(false);
                   setPartyHint('');
                 }}
-                className="bg-slate-700 hover:bg-slate-600 text-slate-300 text-xs font-medium py-1.5 px-2 rounded transition-colors"
+                className="bg-surface-muted hover:bg-surface-hover text-ink text-sm font-medium py-1.5 px-2 rounded transition-colors"
               >
                 Cancel
               </button>
@@ -133,7 +135,7 @@ export default function WalletConnect() {
           <button
             onClick={handleConnect}
             disabled={isConnecting}
-            className="flex items-center gap-2 w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2.5 px-3 rounded-lg transition-colors disabled:opacity-50"
+            className="flex items-center gap-2 w-full bg-accent hover:bg-accent-hover text-white text-base font-medium py-2.5 px-3 rounded-lg transition-colors disabled:opacity-50"
           >
             <Wallet className="w-4 h-4" />
             {isConnecting ? 'Connecting...' : 'Connect Wallet'}
@@ -143,16 +145,18 @@ export default function WalletConnect() {
         {/* Extension badge */}
         {!showHintInput && (
           <div className="flex items-center gap-1.5 mt-2 px-1">
-            <Plug className="w-3 h-3 text-slate-500" />
-            <span className="text-xs text-slate-500">
-              {isExtensionAvailable ? 'Canton extension detected' : 'Dev mode (JSON API)'}
+            <Plug className="w-3 h-3 text-ink-muted" />
+            <span className="text-sm text-ink-muted">
+              {isExtensionAvailable
+                ? 'Canton extension detected'
+                : 'Canton SDK + Dev mode (JSON API)'}
             </span>
           </div>
         )}
 
         {/* Error */}
         {error && (
-          <p className="text-xs text-red-400 mt-1.5 px-1">{error}</p>
+          <p className="text-sm text-negative mt-1.5 px-1">{error}</p>
         )}
       </div>
     );
@@ -167,24 +171,24 @@ export default function WalletConnect() {
         onClick={() => setDropdownOpen((prev) => !prev)}
         className={clsx(
           'flex items-center gap-2 w-full rounded-lg px-3 py-2.5 text-left transition-colors',
-          'bg-slate-800/60 hover:bg-slate-800 border border-slate-700',
+          'bg-surface-muted hover:bg-surface-hover border border-surface-border',
         )}
       >
         {/* Green status dot */}
         <div className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
 
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium text-white truncate">
+          <p className="text-base font-medium text-ink truncate">
             {displayName ?? 'Connected'}
           </p>
-          <p className="text-xs text-slate-500 font-mono truncate">
+          <p className="text-sm text-ink-muted font-mono truncate">
             {party ? truncateParty(party) : ''}
           </p>
         </div>
 
         <ChevronDown
           className={clsx(
-            'w-4 h-4 text-slate-400 transition-transform shrink-0',
+            'w-4 h-4 text-ink-secondary transition-transform shrink-0',
             dropdownOpen && 'rotate-180',
           )}
         />
@@ -192,16 +196,16 @@ export default function WalletConnect() {
 
       {/* Dropdown */}
       {dropdownOpen && (
-        <div className="absolute left-3 right-3 bottom-full mb-2 bg-slate-800 border border-slate-700 rounded-lg shadow-xl z-50 overflow-hidden">
+        <div className="absolute left-3 right-3 bottom-full mb-2 bg-white border border-surface-border rounded-lg shadow-lg z-50 overflow-hidden">
           {/* Balance summary */}
-          <div className="px-4 py-3 border-b border-slate-700">
+          <div className="px-4 py-3 border-b border-surface-border">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-slate-400 font-medium">
+              <span className="text-sm text-ink-secondary font-medium">
                 Balances
               </span>
               <button
                 onClick={handleRefresh}
-                className="text-slate-400 hover:text-slate-200 transition-colors"
+                className="text-ink-secondary hover:text-ink transition-colors"
                 title="Refresh balances"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
@@ -215,39 +219,48 @@ export default function WalletConnect() {
                     key={b.instrumentId}
                     className="flex items-center justify-between"
                   >
-                    <span className="text-xs text-slate-300 font-medium">
+                    <span className="text-sm text-ink font-medium">
                       {b.instrumentId}
                     </span>
                     <div className="text-right">
-                      <span className="text-xs text-white font-medium">
+                      <span className="text-sm text-ink font-medium">
                         {b.amount.toLocaleString()}
                       </span>
                       {b.locked > 0 && (
-                        <span className="text-xs text-slate-500 ml-1">
+                        <span className="text-sm text-ink-muted ml-1">
                           ({b.locked.toLocaleString()} locked)
                         </span>
                       )}
                     </div>
                   </div>
                 ))}
-                <div className="pt-1.5 mt-1.5 border-t border-slate-700 flex items-center justify-between">
-                  <span className="text-xs text-slate-400">Total</span>
-                  <span className="text-xs text-white font-semibold">
-                    {totalBalance.toLocaleString()}
-                  </span>
-                </div>
+                {ccTotal !== null && (
+                  <div className="pt-1.5 mt-1.5 border-t border-surface-border flex items-center justify-between">
+                    <span className="text-sm text-ink-secondary">CC Balance</span>
+                    <span className="text-sm text-ink font-semibold">
+                      {ccTotal.toLocaleString()} CC
+                    </span>
+                  </div>
+                )}
               </div>
             ) : (
-              <p className="text-xs text-slate-500 mt-2">
+              <p className="text-sm text-ink-muted mt-2">
                 No balances found
               </p>
             )}
           </div>
 
           {/* Party info */}
-          <div className="px-4 py-2.5 border-b border-slate-700">
-            <p className="text-xs text-slate-500">Party</p>
-            <p className="text-xs text-slate-300 font-mono break-all mt-0.5">
+          <div className="px-4 py-2.5 border-b border-surface-border">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-ink-muted">Party</p>
+              {isSDKConnected && (
+                <span className="text-sm text-accent bg-accent-light px-1.5 py-0.5 rounded">
+                  via Canton SDK
+                </span>
+              )}
+            </div>
+            <p className="text-sm text-ink font-mono break-all mt-0.5">
               {party}
             </p>
           </div>
@@ -255,7 +268,7 @@ export default function WalletConnect() {
           {/* Disconnect */}
           <button
             onClick={handleDisconnect}
-            className="flex items-center gap-2 w-full px-4 py-2.5 text-sm text-red-400 hover:bg-slate-700/50 transition-colors"
+            className="flex items-center gap-2 w-full px-4 py-2.5 text-base text-negative hover:bg-surface-hover transition-colors"
           >
             <LogOut className="w-4 h-4" />
             Disconnect
@@ -265,7 +278,7 @@ export default function WalletConnect() {
 
       {/* Error */}
       {error && (
-        <p className="text-xs text-red-400 mt-1.5 px-1">{error}</p>
+        <p className="text-sm text-negative mt-1.5 px-1">{error}</p>
       )}
     </div>
   );

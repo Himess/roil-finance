@@ -1,8 +1,13 @@
+import * as path from 'node:path';
+import crypto from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { config, TEMPLATES } from '../config.js';
 import { ledger, type DamlContract } from '../ledger.js';
 import { cantex } from '../cantex.js';
 import { featuredApp } from './featured-app.js';
 import { priceOracle } from '../services/price-oracle.js';
+import { logger } from '../monitoring/logger.js';
 import type { PortfolioPayload } from './rebalance.js';
 
 // ---------------------------------------------------------------------------
@@ -64,6 +69,133 @@ const FREQUENCY_HOURS: Record<CompoundConfig['frequency'], number> = {
 };
 
 // ---------------------------------------------------------------------------
+// File-based persistence
+// File-based persistence serves as a fallback cache.
+// Primary persistence is via CompoundConfig Daml template on the ledger.
+// See saveConfigToLedger() and loadConfigsFromLedger() below.
+// ---------------------------------------------------------------------------
+
+const STATE_FILE_PATH = process.env.COMPOUND_STATE_PATH
+  || (process.platform === 'win32' ? path.join(process.env.TEMP || 'C:\\Temp', 'canton-rebalancer-compound-state.json') : '/tmp/canton-rebalancer-compound-state.json');
+
+interface PersistedState {
+  configs: Array<[string, CompoundConfig]>;
+  history: Array<[string, CompoundResult[]]>;
+}
+
+let saveQueued = false;
+let saveLock = false;
+
+/** Save compound configs and history to a JSON file. */
+async function saveState(): Promise<void> {
+  if (saveLock) { saveQueued = true; return; }
+  saveLock = true;
+  try {
+    const state: PersistedState = {
+      configs: Array.from(compoundConfigs.entries()),
+      history: Array.from(compoundHistory.entries()),
+    };
+    await writeFile(STATE_FILE_PATH, JSON.stringify(state, null, 2), 'utf-8');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(`Failed to save state: ${message}`, { component: 'compound' });
+  } finally {
+    saveLock = false;
+    if (saveQueued) { saveQueued = false; void saveState(); }
+  }
+}
+
+/** Load compound configs and history from a JSON file. */
+async function loadState(): Promise<void> {
+  try {
+    if (!existsSync(STATE_FILE_PATH)) return;
+    const raw = await readFile(STATE_FILE_PATH, 'utf-8');
+    const state: PersistedState = JSON.parse(raw);
+
+    if (Array.isArray(state.configs)) {
+      for (const [party, cfg] of state.configs) {
+        compoundConfigs.set(party, cfg);
+      }
+    }
+    if (Array.isArray(state.history)) {
+      for (const [party, results] of state.history) {
+        compoundHistory.set(party, results);
+      }
+    }
+
+    logger.info(`Loaded state: ${compoundConfigs.size} configs, ${compoundHistory.size} history entries`, { component: 'compound' });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(`Failed to load state: ${message}`, { component: 'compound' });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ledger-based persistence (Daml CompoundConfig template)
+// ---------------------------------------------------------------------------
+
+async function saveConfigToLedger(party: string, cfg: CompoundConfig): Promise<void> {
+  try {
+    // Check if a config already exists on ledger
+    const existing = await ledger.query(TEMPLATES.CompoundConfig, config.platformParty);
+    const userConfig = existing.find((c: any) => c.payload?.user === party);
+
+    if (userConfig) {
+      // Update existing config
+      await ledger.exerciseAs(
+        TEMPLATES.CompoundConfig,
+        userConfig.contractId,
+        'UpdateCompoundConfig',
+        {
+          newStrategy: cfg.reinvestStrategy,
+          newThreshold: String(cfg.minCompoundAmount),
+          newEnabled: cfg.enabled,
+        },
+        party,
+      );
+    } else {
+      // Create new config on ledger
+      await ledger.createAs(
+        TEMPLATES.CompoundConfig,
+        {
+          platform: config.platformParty,
+          user: party,
+          strategy: cfg.reinvestStrategy,
+          minYieldThreshold: String(cfg.minCompoundAmount),
+          isEnabled: cfg.enabled,
+          lastCompoundAt: '',
+          totalCompounded: '0.0',
+        },
+        config.platformParty,
+      );
+    }
+    logger.info('Compound config synced to ledger', { party, strategy: cfg.reinvestStrategy });
+  } catch (err) {
+    logger.warn('Failed to sync compound config to ledger, using file fallback', { error: String(err) });
+  }
+}
+
+async function loadConfigsFromLedger(): Promise<void> {
+  try {
+    const configs = await ledger.query(TEMPLATES.CompoundConfig, config.platformParty);
+    for (const c of configs) {
+      const payload = c.payload as any;
+      if (payload?.user && payload?.strategy) {
+        compoundConfigs.set(payload.user, {
+          enabled: payload.isEnabled ?? true,
+          minCompoundAmount: parseFloat(payload.minYieldThreshold) || 1.0,
+          frequency: 'daily',
+          reinvestStrategy: payload.strategy,
+        });
+      }
+    }
+    logger.info(`Loaded ${configs.length} compound configs from ledger`, { component: 'compound' });
+  } catch (err) {
+    logger.warn('Failed to load compound configs from ledger, using file fallback', { error: String(err) });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // In-memory state
 // ---------------------------------------------------------------------------
 
@@ -75,6 +207,16 @@ const compoundHistory = new Map<string, CompoundResult[]>();
 
 /** Per-party last compound timestamp */
 export const lastCompoundTime = new Map<string, number>();
+
+// Load persisted state on module initialization
+void loadState().then(() => loadConfigsFromLedger());
+
+/** Reset all in-memory state (for testing only). */
+export function _resetCompoundState(): void {
+  compoundConfigs.clear();
+  compoundHistory.clear();
+  lastCompoundTime.clear();
+}
 
 // ---------------------------------------------------------------------------
 // CompoundEngine
@@ -201,7 +343,7 @@ export class CompoundEngine {
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error(`[compound] Error detecting yields for ${party}: ${message}`);
+      logger.error(`Error detecting yields for ${party}: ${message}`, { component: 'compound' });
     }
 
     return yields;
@@ -257,6 +399,7 @@ export class CompoundEngine {
       party,
       totalYieldUsdcx,
       compoundConfig.reinvestStrategy,
+      yieldSources,
     );
 
     // 5. Execute swaps via Cantex
@@ -264,7 +407,7 @@ export class CompoundEngine {
     for (const reinvestment of reinvestments) {
       if (reinvestment.asset === 'USDCx') {
         // No swap needed — yield is already in USDCx terms
-        txIds.push(`compound-usdcx-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`);
+        txIds.push(crypto.randomUUID());
         continue;
       }
 
@@ -273,9 +416,9 @@ export class CompoundEngine {
         txIds.push(swap.txId);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[compound] Swap failed for ${reinvestment.asset}: ${message}`);
+        logger.error(`Swap failed for ${reinvestment.asset}: ${message}`, { component: 'compound' });
         // Continue with remaining reinvestments
-        txIds.push(`compound-failed-${Date.now().toString(36)}`);
+        txIds.push(`failed-${crypto.randomUUID()}`);
       }
     }
 
@@ -300,6 +443,29 @@ export class CompoundEngine {
     }
     compoundHistory.set(party, history);
 
+    // 8b. Persist state to disk
+    await saveState();
+
+    // 8c. Record compound on ledger
+    try {
+      const existing = await ledger.query(TEMPLATES.CompoundConfig, config.platformParty);
+      const userConfig = existing.find((c: any) => c.payload?.user === party);
+      if (userConfig) {
+        await ledger.exerciseAs(
+          TEMPLATES.CompoundConfig,
+          userConfig.contractId,
+          'RecordCompound',
+          {
+            compoundedAmount: String(totalYieldUsdcx),
+            compoundedAt: new Date().toISOString(),
+          },
+          config.platformParty,
+        );
+      }
+    } catch (err) {
+      logger.warn('Failed to record compound on ledger', { error: String(err) });
+    }
+
     // 9. Record Featured App activity
     try {
       await featuredApp.recordActivity(
@@ -311,10 +477,9 @@ export class CompoundEngine {
       // Best effort — don't fail the compound for activity recording
     }
 
-    console.log(
-      `[compound] Executed for ${party}: ` +
-        `${yieldSources.length} sources, ${totalYieldUsdcx.toFixed(2)} USDCx total, ` +
-        `${reinvestments.length} reinvestments, strategy=${compoundConfig.reinvestStrategy}`,
+    logger.info(
+      `Executed for ${party}: ${yieldSources.length} sources, ${totalYieldUsdcx.toFixed(2)} USDCx total, ${reinvestments.length} reinvestments, strategy=${compoundConfig.reinvestStrategy}`,
+      { component: 'compound' },
     );
 
     return result;
@@ -347,13 +512,14 @@ export class CompoundEngine {
       try {
         const result = await this.executeCompound(party, cfg);
         if (result) {
-          console.log(
-            `[compound] Auto-compound for ${party}: ${result.totalYieldUsdcx.toFixed(2)} USDCx`,
+          logger.info(
+            `Auto-compound for ${party}: ${result.totalYieldUsdcx.toFixed(2)} USDCx`,
+            { component: 'compound' },
           );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        console.error(`[compound] Auto-compound failed for ${party}: ${message}`);
+        logger.error(`Auto-compound failed for ${party}: ${message}`, { component: 'compound' });
       }
     }
   }
@@ -465,6 +631,8 @@ export class CompoundEngine {
    */
   setConfig(party: string, cfg: CompoundConfig): void {
     compoundConfigs.set(party, cfg);
+    void saveState();
+    void saveConfigToLedger(party, cfg);
   }
 
   // -----------------------------------------------------------------------
@@ -504,13 +672,14 @@ export class CompoundEngine {
     party: string,
     totalYieldUsdcx: number,
     strategy: CompoundConfig['reinvestStrategy'],
+    detectedYields?: YieldSource[],
   ): Promise<Array<{ asset: string; amount: number }>> {
     switch (strategy) {
       case 'portfolio-targets':
         return this.planPortfolioTargetsReinvestment(party, totalYieldUsdcx);
 
       case 'same-asset':
-        return this.planSameAssetReinvestment(party, totalYieldUsdcx);
+        return this.planSameAssetReinvestment(party, totalYieldUsdcx, detectedYields);
 
       case 'usdc-only':
         return [{ asset: 'USDCx', amount: totalYieldUsdcx }];
@@ -574,8 +743,9 @@ export class CompoundEngine {
   private async planSameAssetReinvestment(
     party: string,
     totalYieldUsdcx: number,
+    detectedYields?: YieldSource[],
   ): Promise<Array<{ asset: string; amount: number }>> {
-    const yields = await this.detectYields(party);
+    const yields = detectedYields ?? await this.detectYields(party);
     const prices = await cantex.getPrices();
 
     // Calculate each source's USDCx contribution
@@ -613,6 +783,17 @@ export class CompoundEngine {
       : [{ asset: 'USDCx', amount: totalYieldUsdcx }];
   }
 }
+
+// ---------------------------------------------------------------------------
+// Dependency Injection Support
+// ---------------------------------------------------------------------------
+// For testing and multi-instance deployment, engines can be instantiated with
+// custom dependencies via CompoundEngine constructor or a factory function.
+// Currently module-level singletons are used for simplicity. Migration path:
+// 1. Change module-level `ledger`/`cantex`/`config` references to this.deps.*
+// 2. Update tests to inject mocks
+// 3. Update index.ts to create engines with injected dependencies
+// ---------------------------------------------------------------------------
 
 /** Singleton instance */
 export const compoundEngine = new CompoundEngine();

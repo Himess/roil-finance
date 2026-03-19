@@ -1,7 +1,9 @@
-import { ArrowRight, RefreshCw, Repeat2, CheckCircle, Clock, XCircle } from 'lucide-react';
+import { useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
+import { RefreshCw, Repeat2, CheckCircle, Clock, XCircle } from 'lucide-react';
 import clsx from 'clsx';
 import type { ActivityEntry } from '@/types';
-import { ASSET_COLORS } from '@/config';
+import TokenIcon from '@/components/TokenIcon';
 
 interface SwapHistoryProps {
   activities: ActivityEntry[];
@@ -45,9 +47,9 @@ const STATUS_ICON = {
 };
 
 const STATUS_COLOR = {
-  completed: 'text-green-400',
-  pending: 'text-amber-400',
-  failed: 'text-red-400',
+  completed: 'text-positive',
+  pending: 'text-warning',
+  failed: 'text-negative',
 };
 
 export default function SwapHistory({
@@ -56,20 +58,29 @@ export default function SwapHistory({
   showType = true,
   className,
 }: SwapHistoryProps) {
-  const displayed = limit ? activities.slice(0, limit) : activities;
+  const navigate = useNavigate();
+  const [showAll, setShowAll] = useState(false);
+  const displayed = showAll ? activities : limit ? activities.slice(0, limit) : activities;
 
   if (displayed.length === 0) {
     return (
       <div className={clsx('card', className)}>
-        <h3 className="text-sm font-semibold text-slate-300 mb-4">
+        <h3 className="text-3xl font-bold text-ink mb-4">
           Activity History
         </h3>
         <div className="text-center py-10">
-          <RefreshCw className="w-8 h-8 text-slate-600 mx-auto mb-3" />
-          <p className="text-sm text-slate-500">No activity yet</p>
-          <p className="text-xs text-slate-600 mt-1">
+          <RefreshCw className="w-8 h-8 text-ink-faint mx-auto mb-3" />
+          <p className="text-base text-ink-muted">No activity yet</p>
+          <p className="text-base text-ink-muted mt-1">
             Rebalances and DCA executions will appear here
           </p>
+          <Link
+            to="/"
+            className="inline-flex items-center gap-1.5 mt-4 btn-primary text-base"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Trigger Rebalance
+          </Link>
         </div>
       </div>
     );
@@ -77,22 +88,22 @@ export default function SwapHistory({
 
   return (
     <div className={clsx('card', className)}>
-      <h3 className="text-sm font-semibold text-slate-300 mb-4">
+      <h3 className="text-3xl font-bold text-ink mb-4">
         Activity History
       </h3>
 
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
-            <tr className="text-xs text-slate-500 border-b border-slate-700">
-              <th className="text-left font-medium pb-2 pr-4">Date</th>
+            <tr className="text-lg font-semibold text-ink uppercase tracking-wide border-b border-surface-border">
+              <th className="text-left pb-2 pr-4">Date</th>
               {showType && (
-                <th className="text-left font-medium pb-2 pr-4">Type</th>
+                <th className="text-left pb-2 pr-4">Type</th>
               )}
-              <th className="text-left font-medium pb-2 pr-4">Swap</th>
-              <th className="text-right font-medium pb-2 pr-4">From</th>
-              <th className="text-right font-medium pb-2 pr-4">To</th>
-              <th className="text-right font-medium pb-2">Status</th>
+              <th className="text-left pb-2 pr-4">Swap</th>
+              <th className="text-right pb-2 pr-4">From</th>
+              <th className="text-right pb-2 pr-4">To</th>
+              <th className="text-right pb-2">Status</th>
             </tr>
           </thead>
           <tbody>
@@ -103,11 +114,12 @@ export default function SwapHistory({
               return (
                 <tr
                   key={entry.id}
-                  className="border-b border-slate-700/50 last:border-0 hover:bg-slate-700/20 transition-colors"
+                  onClick={() => navigate(`/tx/${entry.id}`)}
+                  className="border-b border-surface-border/50 last:border-0 hover:bg-surface-hover transition-colors cursor-pointer"
                 >
                   {/* Date */}
                   <td className="py-3 pr-4">
-                    <span className="text-xs text-slate-400">
+                    <span className="text-lg text-ink-secondary">
                       {formatDate(entry.timestamp)}
                     </span>
                   </td>
@@ -119,8 +131,10 @@ export default function SwapHistory({
                         className={clsx(
                           'badge',
                           entry.type === 'rebalance'
-                            ? 'bg-blue-500/15 text-blue-400'
-                            : 'bg-purple-500/15 text-purple-400',
+                            ? 'bg-accent-light text-accent'
+                            : entry.type === 'dca'
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-amber-50 text-amber-700',
                         )}
                       >
                         {entry.type === 'rebalance' ? (
@@ -128,7 +142,7 @@ export default function SwapHistory({
                         ) : (
                           <Repeat2 className="w-3 h-3 mr-1" />
                         )}
-                        {entry.type === 'rebalance' ? 'Rebal' : 'DCA'}
+                        {entry.type === 'rebalance' ? 'Rebal' : entry.type === 'dca' ? 'DCA' : entry.type}
                       </span>
                     </td>
                   )}
@@ -137,29 +151,11 @@ export default function SwapHistory({
                   <td className="py-3 pr-4">
                     {firstLeg && (
                       <div className="flex items-center gap-1.5">
-                        <span
-                          className="text-xs font-medium"
-                          style={{
-                            color:
-                              ASSET_COLORS[firstLeg.fromAsset.symbol] ??
-                              '#9CA3AF',
-                          }}
-                        >
-                          {firstLeg.fromAsset.symbol}
-                        </span>
-                        <ArrowRight className="w-3 h-3 text-slate-600" />
-                        <span
-                          className="text-xs font-medium"
-                          style={{
-                            color:
-                              ASSET_COLORS[firstLeg.toAsset.symbol] ??
-                              '#9CA3AF',
-                          }}
-                        >
-                          {firstLeg.toAsset.symbol}
-                        </span>
+                        <TokenIcon symbol={firstLeg.fromAsset.symbol} size={20} showBadge={false} />
+                        <span className="text-ink-muted">&rarr;</span>
+                        <TokenIcon symbol={firstLeg.toAsset.symbol} size={20} showBadge={false} />
                         {entry.swapLegs.length > 1 && (
-                          <span className="text-[10px] text-slate-600 ml-1">
+                          <span className="text-lg text-ink-faint ml-1">
                             +{entry.swapLegs.length - 1}
                           </span>
                         )}
@@ -170,12 +166,12 @@ export default function SwapHistory({
                   {/* From amount */}
                   <td className="py-3 pr-4 text-right">
                     {firstLeg && (
-                      <span className="text-xs text-slate-300">
+                      <span className="text-lg text-ink">
                         {formatAmount(
                           firstLeg.fromAmount,
                           firstLeg.fromAsset.symbol,
                         )}{' '}
-                        <span className="text-slate-500">
+                        <span className="text-ink-muted">
                           {firstLeg.fromAsset.symbol}
                         </span>
                       </span>
@@ -185,12 +181,12 @@ export default function SwapHistory({
                   {/* To amount */}
                   <td className="py-3 pr-4 text-right">
                     {firstLeg && (
-                      <span className="text-xs text-slate-300">
+                      <span className="text-lg text-ink">
                         {formatAmount(
                           firstLeg.toAmount,
                           firstLeg.toAsset.symbol,
                         )}{' '}
-                        <span className="text-slate-500">
+                        <span className="text-ink-muted">
                           {firstLeg.toAsset.symbol}
                         </span>
                       </span>
@@ -213,9 +209,12 @@ export default function SwapHistory({
         </table>
       </div>
 
-      {limit && activities.length > limit && (
+      {!showAll && limit && activities.length > limit && (
         <div className="text-center mt-3">
-          <button className="text-xs text-blue-400 hover:text-blue-300 transition-colors">
+          <button
+            onClick={() => setShowAll(true)}
+            className="text-base text-accent hover:text-accent-hover transition-colors"
+          >
             View all {activities.length} entries
           </button>
         </div>

@@ -2,6 +2,8 @@
 // Circuit Breaker pattern for external service calls
 // ---------------------------------------------------------------------------
 
+import { logger } from '../monitoring/logger.js';
+
 export type CircuitState = 'closed' | 'open' | 'half-open';
 
 export interface CircuitBreakerOptions {
@@ -52,7 +54,7 @@ export class CircuitBreaker {
   async execute<T>(fn: () => Promise<T>): Promise<T> {
     if (this.state === 'open') {
       if (Date.now() - this.lastFailureTime >= this.options.resetTimeoutMs) {
-        console.log(
+        logger.info(
           `[circuit-breaker] [${this.options.name}] Transitioning from OPEN to HALF-OPEN`,
         );
         this.state = 'half-open';
@@ -94,7 +96,7 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.lastFailureTime = 0;
-    console.log(`[circuit-breaker] [${this.options.name}] Manually reset to CLOSED`);
+    logger.info(`[circuit-breaker] [${this.options.name}] Manually reset to CLOSED`);
   }
 
   // -------------------------------------------------------------------------
@@ -105,7 +107,7 @@ export class CircuitBreaker {
     if (this.state === 'half-open') {
       this.successCount++;
       if (this.successCount >= this.options.successThreshold) {
-        console.log(
+        logger.info(
           `[circuit-breaker] [${this.options.name}] HALF-OPEN -> CLOSED (${this.successCount} consecutive successes)`,
         );
         this.state = 'closed';
@@ -123,7 +125,7 @@ export class CircuitBreaker {
 
     if (this.state === 'half-open') {
       // Any failure in half-open immediately re-opens the circuit
-      console.log(
+      logger.warn(
         `[circuit-breaker] [${this.options.name}] HALF-OPEN -> OPEN (failure during probe)`,
       );
       this.state = 'open';
@@ -132,7 +134,7 @@ export class CircuitBreaker {
     } else if (this.state === 'closed') {
       this.failureCount++;
       if (this.failureCount >= this.options.failureThreshold) {
-        console.log(
+        logger.warn(
           `[circuit-breaker] [${this.options.name}] CLOSED -> OPEN (${this.failureCount} consecutive failures)`,
         );
         this.state = 'open';

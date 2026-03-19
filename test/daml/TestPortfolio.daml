@@ -2,6 +2,7 @@
 module TestPortfolio where
 
 import Daml.Script
+import DA.List (head)
 import Types
 import Portfolio
 import DCA
@@ -77,7 +78,8 @@ testPortfolioLifecycle = script do
 
   -- 6. Initiate rebalance (drift > 5% threshold)
   (portfolioCid, rebalanceCid) <- submit platform do
-    exerciseCmd portfolioCid InitiateRebalance
+    exerciseCmd portfolioCid InitiateRebalance with
+      requestedAt = "2026-03-15T09:55:00Z"
 
   -- 7. Platform sets swap legs
   rebalanceCid <- submit platform do
@@ -252,6 +254,7 @@ testRewardTracking = script do
       monthId = "2026-03"
       txCount = 0
       tier = Bronze
+      previousTier = None
       consecutiveMonths = 0
       totalRewardsEarned = 0.0
 
@@ -298,6 +301,7 @@ testFeaturedApp = script do
     exerciseCmd configCid FeaturedApp.RecordActivity with
       user = alice
       activityType = FeaturedApp.Rebalance
+      activityId = "rebalance-001"
       description = "Portfolio rebalance executed"
       timestamp = "2026-03-15T12:00:00Z"
 
@@ -310,6 +314,7 @@ testFeaturedApp = script do
     exerciseCmd configCid FeaturedApp.RecordActivity with
       user = alice
       activityType = FeaturedApp.DCAExecution
+      activityId = "dca-001"
       description = "DCA #1: 100 USDCx -> CBTC"
       timestamp = "2026-03-15T13:00:00Z"
 
@@ -318,6 +323,7 @@ testFeaturedApp = script do
     exerciseCmd configCid FeaturedApp.RecordActivity with
       user = bob
       activityType = FeaturedApp.CompoundExecution
+      activityId = "compound-001"
       description = "Compound yield reinvested"
       timestamp = "2026-03-15T14:00:00Z"
 
@@ -339,11 +345,387 @@ testFeaturedApp = script do
     exerciseCmd configCid FeaturedApp.RecordActivity with
       user = alice
       activityType = FeaturedApp.RewardDistribution
+      activityId = "reward-001"
       description = "Monthly rewards distributed: 10.0 CC"
       timestamp = "2026-04-01T00:05:00Z"
 
   -- Verify total activities (4 recorded)
   allActivities <- query @FeaturedApp.ActivityRecord platform
   assertMsg "Platform should see 4 activities" (length allActivities == 4)
+
+  pure ()
+
+-- | Test: Deactivate → rebalance fails → Reactivate → rebalance succeeds
+testDeactivateReactivate : Script ()
+testDeactivateReactivate = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  -- Create portfolio (proposal → accept)
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 50.0
+        ]
+      triggerMode = Manual
+
+  -- Sync holdings with drift to allow rebalance
+  portfolioCid <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    2000.0 800.0    -- 80% vs target 50%
+        , Holding usdcx 200.0  200.0    -- 20% vs target 50%
+        ]
+
+  -- Deactivate the portfolio
+  portfolioCid <- submit alice do
+    exerciseCmd portfolioCid DeactivatePortfolio
+
+  -- Try to InitiateRebalance → should fail (isActive check)
+  submitMustFail platform do
+    exerciseCmd portfolioCid InitiateRebalance with
+      requestedAt = "2026-03-15T10:00:00Z"
+
+  -- Reactivate the portfolio
+  portfolioCid <- submit alice do
+    exerciseCmd portfolioCid ActivatePortfolio
+
+  -- InitiateRebalance → should succeed
+  (portfolioCid, rebalanceCid) <- submit platform do
+    exerciseCmd portfolioCid InitiateRebalance with
+      requestedAt = "2026-03-15T10:05:00Z"
+
+  pure ()
+
+-- | Test: Fail a rebalance request
+testFailRebalance : Script ()
+testFailRebalance = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  -- Create portfolio
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    60.0
+        , TargetAllocation usdcx 40.0
+        ]
+      triggerMode = Manual
+
+  -- Sync holdings with drift
+  portfolioCid <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    3000.0 900.0    -- 90% vs target 60%
+        , Holding usdcx 100.0  100.0    -- 10% vs target 40%
+        ]
+
+  -- Initiate rebalance
+  (portfolioCid, rebalanceCid) <- submit platform do
+    exerciseCmd portfolioCid InitiateRebalance with
+      requestedAt = "2026-03-15T11:00:00Z"
+
+  -- Fail the rebalance with a reason
+  failedCid <- submit platform do
+    exerciseCmd rebalanceCid FailRebalance with
+      reason = "Cantex swap execution error"
+
+  -- Verify the request still exists (FailRebalance creates a new contract with Failed status)
+  requests <- query @RebalanceRequest alice
+  assertMsg "Should have 1 rebalance request" (length requests == 1)
+
+  pure ()
+
+-- | Test: Below threshold rebalance should fail
+testBelowThresholdRebalance : Script ()
+testBelowThresholdRebalance = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  -- Create portfolio with DriftThreshold 10.0
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 50.0
+        ]
+      triggerMode = DriftThreshold 10.0
+
+  -- Sync holdings that create only 2% drift (below threshold of 10%)
+  portfolioCid <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    1000.0 510.0    -- 51% vs target 50% = 1% drift
+        , Holding usdcx 490.0  490.0    -- 49% vs target 50% = 1% drift
+        ]
+
+  -- Try InitiateRebalance → should fail (drift below threshold)
+  submitMustFail platform do
+    exerciseCmd portfolioCid InitiateRebalance with
+      requestedAt = "2026-03-15T12:00:00Z"
+
+  pure ()
+
+-- | Test: DCA cancel archives the contract
+testDCACancel : Script ()
+testDCACancel = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+  let cbtc  = mkAssetId tokenAdmin "CBTC"
+
+  -- Create DCA schedule
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = cbtc
+      amountPerBuy = 100.0
+      frequency = Weekly
+      totalExecutions = 0
+      isActive = True
+      createdAt = "2026-03-15T10:00:00Z"
+
+  -- Cancel DCA
+  submit alice do
+    exerciseCmd scheduleCid CancelDCA
+
+  -- Verify it's archived (can't exercise on it anymore)
+  submitMustFail platform do
+    exerciseCmd scheduleCid ExecuteDCA
+
+  pure ()
+
+-- | Test: DCA update amount
+testDCAUpdateAmount : Script ()
+testDCAUpdateAmount = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+  let cbtc  = mkAssetId tokenAdmin "CBTC"
+
+  -- Create DCA schedule with amountPerBuy = 100.0
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = cbtc
+      amountPerBuy = 100.0
+      frequency = Weekly
+      totalExecutions = 0
+      isActive = True
+      createdAt = "2026-03-15T10:00:00Z"
+
+  -- Update amount to 200.0
+  scheduleCid <- submit alice do
+    exerciseCmd scheduleCid UpdateDCAAmount with
+      newAmount = 200.0
+
+  -- Verify new amount by querying
+  schedules <- query @DCASchedule alice
+  assertMsg "Should have 1 DCA schedule" (length schedules == 1)
+  let (_, schedule) = head schedules
+  assertMsg "Amount should be 200.0" (schedule.amountPerBuy == 200.0)
+
+  pure ()
+
+-- | Test: Referral system
+testReferralSystem : Script ()
+testReferralSystem = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  -- Create Referral between alice (referrer) and bob (referee)
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 10.0
+
+  -- Exercise CreditReferrer → creates ReferralCredit
+  creditCid <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      timestamp = "2026-03-15T12:00:00Z"
+
+  -- Verify referral is still active (nonconsuming choice)
+  referrals <- query @Referral alice
+  assertMsg "Referral should still exist" (length referrals == 1)
+
+  -- Verify credit was created with correct amount (10% of 500 = 50)
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 1 referral credit" (length credits == 1)
+  let (_, credit) = head credits
+  assertMsg "Credit amount should be 50.0" (credit.amount == 50.0)
+
+  -- Exercise again to verify nonconsuming behavior
+  creditCid2 <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 200.0
+      timestamp = "2026-03-15T13:00:00Z"
+
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 2 referral credits" (length credits == 2)
+
+  pure ()
+
+-- | Test: Negative target percentage rejection
+testNegativeTargetRejection : Script ()
+testNegativeTargetRejection = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  -- Try to create portfolio with negative targetPct → should fail
+  submitMustFail alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    (-10.0)
+        , TargetAllocation usdcx 110.0
+        ]
+      triggerMode = Manual
+
+  pure ()
+
+-- | Test: Compound config lifecycle
+testCompoundConfig : Script ()
+testCompoundConfig = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  -- Create compound config
+  configCid <- submit platform do
+    createCmd CompoundConfig with
+      platform
+      user = alice
+      strategy = "portfolio-targets"
+      minYieldThreshold = 10.0
+      isEnabled = True
+      lastCompoundAt = ""
+      totalCompounded = 0.0
+
+  -- User updates config
+  configCid <- submit alice do
+    exerciseCmd configCid UpdateCompoundConfig with
+      newStrategy = "same-asset"
+      newThreshold = 5.0
+      newEnabled = True
+
+  -- Platform records compound
+  configCid <- submit platform do
+    exerciseCmd configCid RecordCompound with
+      compoundedAmount = 25.0
+      compoundedAt = "2026-03-17T12:00:00Z"
+
+  -- Verify state
+  configs <- query @CompoundConfig alice
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, cfg) = head configs
+  assertMsg "Strategy should be same-asset" (cfg.strategy == "same-asset")
+  assertMsg "Total compounded should be 25.0" (cfg.totalCompounded == 25.0)
+
+  pure ()
+
+-- | Test: User preferences
+testUserPreferences : Script ()
+testUserPreferences = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  -- Create preferences
+  prefsCid <- submit platform do
+    createCmd UserPreferences with
+      platform
+      user = alice
+      defaultDriftPct = 5.0
+      slippageTolerance = 0.02
+      notificationsOn = True
+      autoRebalanceOn = True
+      createdAt = "2026-03-17T00:00:00Z"
+
+  -- User updates preferences
+  prefsCid <- submit alice do
+    exerciseCmd prefsCid UpdatePreferences with
+      newDriftPct = 3.0
+      newSlippage = 0.05
+      newNotifications = False
+      newAutoRebalance = True
+
+  -- Verify
+  prefs <- query @UserPreferences alice
+  assertMsg "Should have 1 prefs" (length prefs == 1)
+  let (_, p) = head prefs
+  assertMsg "Drift should be 3.0" (p.defaultDriftPct == 3.0)
+  assertMsg "Notifications should be off" (not p.notificationsOn)
+
+  pure ()
+
+-- | Test: Duplicate asset rejection
+testDuplicateAssetRejection : Script ()
+testDuplicateAssetRejection = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAssetId tokenAdmin "CC"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  -- Try to create portfolio with duplicate assets → should fail
+  submitMustFail alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc 50.0
+        , TargetAllocation cc 50.0
+        ]
+      triggerMode = Manual
 
   pure ()

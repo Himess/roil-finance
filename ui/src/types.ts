@@ -24,7 +24,8 @@ export interface Holding {
 /** Matches Daml Types.TriggerMode */
 export type TriggerMode =
   | { tag: 'Manual' }
-  | { tag: 'DriftThreshold'; value: number };
+  | { tag: 'DriftThreshold'; value: number }
+  | { tag: 'PriceCondition'; value: { conditionAsset: string; targetPrice: number; conditionAction: string } };
 
 /** Matches Daml Types.DCAFrequency */
 export type DCAFrequency = 'Hourly' | 'Daily' | 'Weekly' | 'Monthly';

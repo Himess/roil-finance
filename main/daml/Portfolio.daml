@@ -52,6 +52,10 @@ template Portfolio
   where
     signatory platform, user
     ensure validateTargets targets && length targets >= 2
+      && (case triggerMode of
+            DriftThreshold t -> t > 0.0
+            PriceCondition pc -> pc.targetPrice > 0.0
+            _ -> True)
 
     -- User updates their target allocations
     choice UpdateTargets : ContractId Portfolio
@@ -89,13 +93,17 @@ template Portfolio
     -- Initiate a rebalance operation
     -- Returns a RebalanceRequest that the backend will execute via Cantex
     choice InitiateRebalance : (ContractId Portfolio, ContractId RebalanceRequest)
+      with
+        requestedAt : Text
       controller platform
       do
+        assertMsg "Portfolio is not active" isActive
         let drift = calcMaxDrift targets holdings
         -- For auto-trigger, verify drift exceeds threshold
         case triggerMode of
           DriftThreshold threshold ->
             assertMsg "Drift below threshold" (drift >= threshold)
+          PriceCondition _ -> pure ()  -- price condition checked by backend
           Manual -> pure ()
 
         let newPortfolio = this with totalRebalances = totalRebalances + 1
@@ -107,7 +115,7 @@ template Portfolio
           targetAllocations = targets
           status = Pending
           swapLegs = []
-          requestedAt = "pending"  -- will be set by trigger/backend
+          requestedAt
         pure (portfolioCid, requestCid)
 
     -- User deactivates the portfolio
@@ -142,6 +150,7 @@ template RebalanceRequest
         legs : [SwapLeg]
       controller platform
       do
+        assertMsg "Request must be Pending" (status == Pending)
         assertMsg "Must have at least 1 swap leg" (not (null legs))
         create this with
           swapLegs = legs
@@ -154,6 +163,7 @@ template RebalanceRequest
         completedAt  : Text
       controller platform
       do
+        assertMsg "Request must be Executing" (status == Executing)
         logCid <- create RebalanceLog with
           platform
           user
@@ -178,6 +188,7 @@ template RebalanceRequest
         reason : Text
       controller platform
       do
+        assertMsg "Request cannot be already Completed" (status /= Completed)
         create this with status = Failed reason
 
 -- | Immutable log of a completed rebalance
@@ -189,6 +200,98 @@ template RebalanceLog
     swapLegs    : [SwapLeg]
     driftBefore : Decimal
     timestamp   : Text
+  where
+    signatory platform
+    observer user
+
+-- | Compound yield configuration stored on ledger
+template CompoundConfig
+  with
+    platform        : Party
+    user            : Party
+    strategy        : Text           -- "portfolio-targets" | "same-asset" | "usdc-only"
+    minYieldThreshold : Decimal      -- minimum yield to trigger compound
+    isEnabled       : Bool
+    lastCompoundAt  : Text           -- ISO timestamp
+    totalCompounded : Decimal        -- lifetime compounded value in CC
+  where
+    signatory platform
+    observer user
+
+    choice UpdateCompoundConfig : ContractId CompoundConfig
+      with
+        newStrategy : Text
+        newThreshold : Decimal
+        newEnabled : Bool
+      controller user
+      do
+        create this with
+          strategy = newStrategy
+          minYieldThreshold = newThreshold
+          isEnabled = newEnabled
+
+    choice RecordCompound : ContractId CompoundConfig
+      with
+        compoundedAmount : Decimal
+        compoundedAt : Text
+      controller platform
+      do
+        assertMsg "Compound amount must be positive" (compoundedAmount > 0.0)
+        create this with
+          totalCompounded = totalCompounded + compoundedAmount
+          lastCompoundAt = compoundedAt
+
+-- | User preferences stored on ledger
+template UserPreferences
+  with
+    platform           : Party
+    user               : Party
+    defaultDriftPct    : Decimal      -- preferred drift threshold
+    slippageTolerance  : Decimal      -- preferred slippage (e.g., 0.02 = 2%)
+    notificationsOn    : Bool
+    autoRebalanceOn    : Bool
+    createdAt          : Text
+  where
+    signatory platform
+    observer user
+
+    choice UpdatePreferences : ContractId UserPreferences
+      with
+        newDriftPct       : Decimal
+        newSlippage       : Decimal
+        newNotifications  : Bool
+        newAutoRebalance  : Bool
+      controller user
+      do
+        assertMsg "Drift must be positive" (newDriftPct > 0.0)
+        assertMsg "Slippage must be between 0 and 1" (newSlippage >= 0.0 && newSlippage <= 1.0)
+        create this with
+          defaultDriftPct = newDriftPct
+          slippageTolerance = newSlippage
+          notificationsOn = newNotifications
+          autoRebalanceOn = newAutoRebalance
+
+-- | Immutable log of portfolio configuration changes
+template PortfolioAuditLog
+  with
+    platform     : Party
+    user         : Party
+    changeType   : Text    -- "targets_updated" | "trigger_changed" | "activated" | "deactivated"
+    description  : Text    -- human-readable description of change
+    timestamp    : Text
+  where
+    signatory platform
+    observer user
+
+-- | Immutable log of compound execution
+template CompoundLog
+  with
+    platform          : Party
+    user              : Party
+    strategy          : Text
+    compoundedAmount  : Decimal
+    reinvestments     : [Text]     -- description of each reinvestment
+    timestamp         : Text
   where
     signatory platform
     observer user

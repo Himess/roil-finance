@@ -1,6 +1,13 @@
 import { config, TEMPLATES } from '../config.js';
 import { ledger, type DamlContract } from '../ledger.js';
 import { cantex } from '../cantex.js';
+import { smartRouter } from '../services/smart-router.js';
+import { featuredApp } from './featured-app.js';
+import { rewardsEngine } from './rewards.js';
+import { logger } from '../monitoring/logger.js';
+
+/** Platform fee rate applied to each swap output (e.g. 0.001 = 0.1%) */
+const PLATFORM_FEE_RATE = parseFloat(process.env.PLATFORM_FEE_RATE || '0.001');
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,13 +53,13 @@ export interface ScheduleStatus {
 // ---------------------------------------------------------------------------
 
 /** Parse a Daml DCAFrequency variant into a human-readable string */
-function parseFrequency(freq: string | { tag: string }): string {
+export function parseFrequency(freq: string | { tag: string }): string {
   if (typeof freq === 'string') return freq;
   return freq.tag ?? 'Unknown';
 }
 
 /** Get the interval in milliseconds for a DCA frequency */
-function frequencyToMs(freq: string): number {
+export function frequencyToMs(freq: string): number {
   switch (freq) {
     case 'Hourly':
       return 60 * 60 * 1000;
@@ -75,7 +82,7 @@ function frequencyToMs(freq: string): number {
  * - If no log exists, check if enough time passed since creation
  * - If a log exists, check if enough time passed since last execution
  */
-function isDue(schedule: DCASchedulePayload, lastExecution: string | null): boolean {
+export function isDue(schedule: DCASchedulePayload, lastExecution: string | null): boolean {
   const now = Date.now();
   const freq = parseFrequency(schedule.frequency);
   const interval = frequencyToMs(freq);
@@ -94,12 +101,27 @@ function isDue(schedule: DCASchedulePayload, lastExecution: string | null): bool
  * Compute the approximate next execution timestamp based on last execution
  * and frequency.
  */
-function computeNextExecution(freq: string, lastExecution: string | null, createdAt: string): string | null {
+export function computeNextExecution(freq: string, lastExecution: string | null, createdAt: string): string | null {
   const base = lastExecution ?? createdAt;
   const baseTs = new Date(base).getTime();
   if (isNaN(baseTs)) return null;
   const interval = frequencyToMs(freq);
   return new Date(baseTs + interval).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// Last-execution cache (avoids querying ALL DCALog contracts every cycle)
+// ---------------------------------------------------------------------------
+
+/**
+ * In-memory cache mapping a schedule key (user + source + target) to the
+ * timestamp (ms) of the most recent execution. Populated on first query
+ * and updated after each successful DCA execution.
+ */
+const lastExecutionCache = new Map<string, number>();
+
+function scheduleKey(user: string, source: string, target: string): string {
+  return `${user}:${source}:${target}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -137,35 +159,42 @@ export class DCAEngine {
       const activeSchedules = schedules.filter((s) => s.payload.isActive);
 
       if (activeSchedules.length === 0) {
-        console.log('[dca] No active schedules found');
+        logger.info('No active schedules found', { component: 'dca' });
         return { executed: 0, failed: 0 };
       }
 
-      // Fetch all DCA logs to determine last execution times
-      const logs = await ledger.query<DCALogPayload>(TEMPLATES.DCALog, platform);
+      // Fetch all DCA logs only if cache is cold (first run)
+      if (lastExecutionCache.size === 0) {
+        const logs = await ledger.query<DCALogPayload>(TEMPLATES.DCALog, platform);
+        for (const log of logs) {
+          const key = scheduleKey(
+            log.payload.user,
+            log.payload.sourceAsset.symbol,
+            log.payload.targetAsset.symbol,
+          );
+          const ts = new Date(log.payload.timestamp).getTime();
+          const existing = lastExecutionCache.get(key) ?? 0;
+          if (ts > existing) {
+            lastExecutionCache.set(key, ts);
+          }
+        }
+      }
 
       for (const schedule of activeSchedules) {
         const { payload } = schedule;
 
-        // Find most recent log for this schedule's user + asset pair
-        const relevantLogs = logs
-          .filter(
-            (l) =>
-              l.payload.user === payload.user &&
-              l.payload.sourceAsset.symbol === payload.sourceAsset.symbol &&
-              l.payload.targetAsset.symbol === payload.targetAsset.symbol,
-          )
-          .sort((a, b) => new Date(b.payload.timestamp).getTime() - new Date(a.payload.timestamp).getTime());
-
-        const lastExecution = relevantLogs.length > 0 ? relevantLogs[0].payload.timestamp : null;
+        // Use cache to determine last execution time
+        const key = scheduleKey(payload.user, payload.sourceAsset.symbol, payload.targetAsset.symbol);
+        const cachedTs = lastExecutionCache.get(key);
+        const lastExecution = cachedTs ? new Date(cachedTs).toISOString() : null;
 
         if (!isDue(payload, lastExecution)) {
           continue;
         }
 
-        console.log(
-          `[dca] Executing DCA: ${payload.sourceAsset.symbol} → ${payload.targetAsset.symbol}, ` +
-            `amount=${payload.amountPerBuy}, user=${payload.user}`,
+        logger.info(
+          `Executing DCA: ${payload.sourceAsset.symbol} → ${payload.targetAsset.symbol}, amount=${payload.amountPerBuy}, user=${payload.user}`,
+          { component: 'dca' },
         );
 
         try {
@@ -179,12 +208,24 @@ export class DCAEngine {
           );
           const [_newScheduleCid, executionCid] = execResult;
 
-          // 2. Execute swap via Cantex
+          // 2. Execute swap via Smart Router (DEX aggregator)
           const amount = Number(payload.amountPerBuy);
-          const swap = await cantex.executeSwap(
+          const swap = await smartRouter.executeSwap(
             payload.sourceAsset.symbol,
             payload.targetAsset.symbol,
             amount,
+          );
+
+          logger.info(
+            `[dca] Swap executed via ${swap.source}: ${payload.sourceAsset.symbol} → ${payload.targetAsset.symbol}`,
+            { ...swap },
+          );
+
+          // 2b. Deduct platform fee from swap output
+          const platformFee = swap.outputAmount * PLATFORM_FEE_RATE;
+          const netOutputAmount = swap.outputAmount - platformFee;
+          logger.info(
+            `[dca] Platform fee: ${platformFee.toFixed(6)} ${payload.targetAsset.symbol} (${(PLATFORM_FEE_RATE * 100).toFixed(2)}% of ${swap.outputAmount.toFixed(6)})`,
           );
 
           // 3. Complete execution on ledger
@@ -193,26 +234,50 @@ export class DCAEngine {
             executionCid,
             'CompleteDCAExecution',
             {
-              receivedAmount: String(swap.outputAmount),
+              receivedAmount: String(netOutputAmount),
               completedAt: new Date().toISOString(),
             },
             platform,
           );
 
-          console.log(
-            `[dca] Completed: ${swap.inputAmount} ${payload.sourceAsset.symbol} → ` +
-              `${swap.outputAmount.toFixed(6)} ${payload.targetAsset.symbol}`,
+          // Update the last-execution cache
+          lastExecutionCache.set(key, Date.now());
+
+          logger.info(
+            `Completed via ${swap.source}: ${swap.inputAmount} ${payload.sourceAsset.symbol} → ${netOutputAmount.toFixed(6)} ${payload.targetAsset.symbol} (fee: ${platformFee.toFixed(6)})`,
+            { component: 'dca' },
           );
+
+          // 4. Record Featured App activity for DCA execution
+          try {
+            await featuredApp.recordActivity(
+              payload.user,
+              'DCAExecution',
+              `DCA: ${swap.inputAmount} ${payload.sourceAsset.symbol} -> ${swap.outputAmount.toFixed(6)} ${payload.targetAsset.symbol}`,
+            );
+          } catch {
+            // Best effort — don't fail the DCA for activity recording
+          }
+
+          // 5. Record transaction for reward tracking
+          try {
+            await rewardsEngine.recordTransaction(payload.user, amount);
+          } catch (e) {
+            logger.warn('Failed to record reward TX after DCA', { error: String(e) });
+          }
 
           executed++;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          console.error(`[dca] Failed for user=${payload.user}: ${message}`);
+          logger.error(`Failed for user=${payload.user}: ${message}`, { component: 'dca' });
           failed++;
         }
       }
     } catch (err) {
-      console.error('[dca] Error scanning schedules:', err);
+      logger.error('Error scanning schedules', {
+        component: 'dca',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
 
     return { executed, failed };
@@ -323,6 +388,17 @@ export class DCAEngine {
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }
 }
+
+// ---------------------------------------------------------------------------
+// Dependency Injection Support
+// ---------------------------------------------------------------------------
+// For testing and multi-instance deployment, engines can be instantiated with
+// custom dependencies via DCAEngine constructor or a factory function.
+// Currently module-level singletons are used for simplicity. Migration path:
+// 1. Change module-level `ledger`/`cantex`/`config` references to this.deps.*
+// 2. Update tests to inject mocks
+// 3. Update index.ts to create engines with injected dependencies
+// ---------------------------------------------------------------------------
 
 /** Singleton instance */
 export const dcaEngine = new DCAEngine();

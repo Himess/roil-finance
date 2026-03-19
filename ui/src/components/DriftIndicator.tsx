@@ -26,10 +26,10 @@ export default function DriftIndicator({
     drift > 5 ? 'bg-red-500' : drift > 3 ? 'bg-amber-500' : 'bg-green-500';
   const driftTextColor =
     drift > 5
-      ? 'text-red-400'
+      ? 'text-negative'
       : drift > 3
-        ? 'text-amber-400'
-        : 'text-green-400';
+        ? 'text-warning'
+        : 'text-positive';
 
   const statusLabel =
     drift > 5
@@ -41,10 +41,10 @@ export default function DriftIndicator({
   return (
     <div className={clsx('card', className)}>
       <div className="flex items-center justify-between mb-4">
-        <h3 className="text-sm font-semibold text-slate-300">
+        <h3 className="text-lg font-semibold text-ink">
           Portfolio Drift
         </h3>
-        <span className={clsx('badge', driftTextColor, 'bg-slate-700/60')}>
+        <span className={clsx('badge', driftTextColor, 'bg-surface-muted')}>
           {statusLabel}
         </span>
       </div>
@@ -54,21 +54,21 @@ export default function DriftIndicator({
         <span className={clsx('text-4xl font-bold', driftTextColor)}>
           {drift.toFixed(2)}
         </span>
-        <span className="text-lg text-slate-500">%</span>
+        <span className="text-lg text-ink-muted">%</span>
       </div>
 
       {/* Drift bar */}
       <div className="relative">
         {/* Background track */}
-        <div className="h-3 bg-slate-700 rounded-full overflow-hidden">
+        <div className="h-3 bg-surface-muted rounded-full overflow-hidden">
           {/* Green zone */}
           <div
-            className="absolute top-0 left-0 h-3 bg-green-900/40 rounded-l-full"
+            className="absolute top-0 left-0 h-3 bg-green-100 rounded-l-full"
             style={{ width: `${(3 / maxDisplayDrift) * 100}%` }}
           />
           {/* Yellow zone */}
           <div
-            className="absolute top-0 h-3 bg-amber-900/30"
+            className="absolute top-0 h-3 bg-amber-100"
             style={{
               left: `${(3 / maxDisplayDrift) * 100}%`,
               width: `${((5 - 3) / maxDisplayDrift) * 100}%`,
@@ -76,7 +76,7 @@ export default function DriftIndicator({
           />
           {/* Red zone */}
           <div
-            className="absolute top-0 h-3 bg-red-900/20 rounded-r-full"
+            className="absolute top-0 h-3 bg-red-100 rounded-r-full"
             style={{
               left: `${(5 / maxDisplayDrift) * 100}%`,
               width: `${((maxDisplayDrift - 5) / maxDisplayDrift) * 100}%`,
@@ -93,11 +93,11 @@ export default function DriftIndicator({
         {/* Threshold marker */}
         {thresholdPct !== null && (
           <div
-            className="absolute top-0 h-3 w-0.5 bg-white/70"
+            className="absolute top-0 h-3 w-0.5 bg-ink/50"
             style={{ left: `${thresholdPct}%` }}
           >
             <div className="absolute -top-5 left-1/2 -translate-x-1/2 whitespace-nowrap">
-              <span className="text-[10px] text-slate-400 font-medium">
+              <span className="text-sm text-ink-secondary font-medium">
                 Auto: {threshold}%
               </span>
             </div>
@@ -105,7 +105,7 @@ export default function DriftIndicator({
         )}
 
         {/* Scale labels */}
-        <div className="flex justify-between mt-2 text-[10px] text-slate-600">
+        <div className="flex justify-between mt-2 text-sm text-ink-secondary">
           <span>0%</span>
           <span>3%</span>
           <span>5%</span>
@@ -115,17 +115,17 @@ export default function DriftIndicator({
       </div>
 
       {/* Trigger mode info */}
-      <div className="mt-5 flex items-center justify-between text-xs">
-        <span className="text-slate-500">
+      <div className="mt-5 flex items-center justify-between text-sm">
+        <span className="text-ink-muted">
           Trigger:{' '}
-          <span className="text-slate-300 font-medium">
+          <span className="text-ink font-medium">
             {triggerMode.tag === 'Manual'
               ? 'Manual'
               : `Auto at ${triggerMode.value}% drift`}
           </span>
         </span>
         {threshold !== null && drift >= threshold && (
-          <span className="text-amber-400 font-medium animate-pulse">
+          <span className="text-warning font-medium animate-pulse">
             Rebalance recommended
           </span>
         )}

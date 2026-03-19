@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { config, TEMPLATES } from '../config.js';
 import { ledger } from '../ledger.js';
 import { dcaEngine, type DCASchedulePayload } from '../engine/dca.js';
+import { requireParty } from '../middleware/auth.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -40,7 +41,7 @@ export const dcaRouter = Router();
  *
  * List all DCA schedules for a given party.
  */
-dcaRouter.get('/:party', async (req: Request, res: Response) => {
+dcaRouter.get('/:party', requireParty('party'), async (req: Request, res: Response) => {
   try {
     const { party } = req.params as Record<string, string>;
     const schedules = await dcaEngine.listSchedules(party!);
@@ -65,6 +66,15 @@ dcaRouter.post('/', async (req: Request, res: Response) => {
     }
 
     const { user, sourceAsset, targetAsset, amountPerBuy, frequency } = parsed.data;
+
+    // Authorization: verify the caller can act as the specified user
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      if (user && !actAs.includes(user)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this party' });
+      }
+    }
+
     const platform = config.platformParty;
 
     if (sourceAsset.symbol === targetAsset.symbol) {
@@ -80,7 +90,7 @@ dcaRouter.post('/', async (req: Request, res: Response) => {
         sourceAsset,
         targetAsset,
         amountPerBuy: String(amountPerBuy),
-        frequency,
+        frequency: { tag: frequency, value: {} },
         totalExecutions: 0,
         isActive: true,
         createdAt: new Date().toISOString(),
@@ -130,6 +140,14 @@ dcaRouter.put('/:id/amount', async (req: Request, res: Response) => {
       return;
     }
 
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      const scheduleUser = schedule?.payload?.user;
+      if (scheduleUser && !actAs.includes(scheduleUser)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
+      }
+    }
+
     const result = await ledger.exerciseAs(
       TEMPLATES.DCASchedule,
       id!,
@@ -169,6 +187,14 @@ dcaRouter.put('/:id/frequency', async (req: Request, res: Response) => {
       return;
     }
 
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      const scheduleUser = schedule?.payload?.user;
+      if (scheduleUser && !actAs.includes(scheduleUser)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
+      }
+    }
+
     const result = await ledger.exerciseAs(
       TEMPLATES.DCASchedule,
       id!,
@@ -201,6 +227,14 @@ dcaRouter.post('/:id/pause', async (req: Request, res: Response) => {
     if (!schedule) {
       res.status(404).json({ success: false, error: 'DCA schedule not found' });
       return;
+    }
+
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      const scheduleUser = schedule?.payload?.user;
+      if (scheduleUser && !actAs.includes(scheduleUser)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
+      }
     }
 
     if (!schedule.payload.isActive) {
@@ -242,6 +276,14 @@ dcaRouter.post('/:id/resume', async (req: Request, res: Response) => {
       return;
     }
 
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      const scheduleUser = schedule?.payload?.user;
+      if (scheduleUser && !actAs.includes(scheduleUser)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
+      }
+    }
+
     if (schedule.payload.isActive) {
       res.status(400).json({ success: false, error: 'Schedule is already active' });
       return;
@@ -279,6 +321,14 @@ dcaRouter.delete('/:id', async (req: Request, res: Response) => {
     if (!schedule) {
       res.status(404).json({ success: false, error: 'DCA schedule not found' });
       return;
+    }
+
+    if (config.network !== 'localnet') {
+      const actAs = (req as any).actAs as string[] || [];
+      const scheduleUser = schedule?.payload?.user;
+      if (scheduleUser && !actAs.includes(scheduleUser)) {
+        return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
+      }
     }
 
     await ledger.exerciseAs(

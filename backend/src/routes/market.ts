@@ -1,6 +1,10 @@
 import { Router, type Request, type Response } from 'express';
 import { cantex } from '../cantex.js';
 import { priceOracle } from '../services/price-oracle.js';
+import { scanClient } from '../services/scan-client.js';
+import { smartRouter } from '../services/smart-router.js';
+import { templeClient } from '../services/temple-client.js';
+import { config } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Router
@@ -132,5 +136,120 @@ marketRouter.get('/convert', async (req: Request, res: Response) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
+  }
+});
+
+/**
+ * GET /api/market/quote
+ *
+ * Get a swap quote from Cantex without executing.
+ * Query parameters: from, to, amount
+ */
+marketRouter.get('/quote', async (req, res) => {
+  try {
+    const { from, to, amount } = req.query;
+    if (!from || !to || !amount) {
+      return res.status(400).json({ success: false, error: 'from, to, amount required' });
+    }
+    const quote = await cantex.getQuote(String(from), String(to), Number(amount));
+    res.json({ success: true, data: quote });
+  } catch (err: any) {
+    res.json({ success: true, data: null, note: 'Quote not available' });
+  }
+});
+
+/**
+ * GET /api/market/network
+ *
+ * Canton Network stats from Scan API.
+ */
+marketRouter.get('/network', async (_req, res) => {
+  try {
+    const [rounds, apps] = await Promise.all([
+      scanClient.getOpenRounds(),
+      scanClient.getFeaturedApps(),
+    ]);
+    res.json({
+      success: true,
+      data: {
+        openRounds: rounds,
+        featuredApps: apps,
+        network: config.network,
+      },
+    });
+  } catch (err: any) {
+    res.json({ success: true, data: { openRounds: [], featuredApps: [], network: config.network } });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Smart Router (DEX Aggregator) endpoints
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/market/best-quote?from=CC&to=USDCx&amount=100
+ *
+ * Get the best quote across all available DEXes (Cantex AMM + Temple CLOB).
+ */
+marketRouter.get('/best-quote', async (req, res) => {
+  try {
+    const { from, to, amount } = req.query;
+    if (!from || !to || !amount) {
+      return res.status(400).json({ success: false, error: 'from, to, amount required' });
+    }
+    const quote = await smartRouter.getBestQuote(String(from), String(to), Number(amount));
+    res.json({ success: true, data: quote });
+  } catch (err: any) {
+    res.json({ success: true, data: null, error: err.message });
+  }
+});
+
+/**
+ * GET /api/market/compare-quotes?from=CC&to=USDCx&amount=100
+ *
+ * Get quotes from ALL DEXes for side-by-side comparison.
+ */
+marketRouter.get('/compare-quotes', async (req, res) => {
+  try {
+    const { from, to, amount } = req.query;
+    if (!from || !to || !amount) {
+      return res.status(400).json({ success: false, error: 'from, to, amount required' });
+    }
+    const quotes = await smartRouter.getAllQuotes(String(from), String(to), Number(amount));
+    res.json({ success: true, data: quotes });
+  } catch (err: any) {
+    res.json({ success: true, data: [] });
+  }
+});
+
+/**
+ * GET /api/market/dexes
+ *
+ * List available DEXes and their status.
+ */
+marketRouter.get('/dexes', async (_req, res) => {
+  try {
+    const dexes = await smartRouter.getAvailableDexes();
+    res.json({ success: true, data: dexes });
+  } catch {
+    res.json({ success: true, data: [] });
+  }
+});
+
+/**
+ * GET /api/market/orderbook?from=CC&to=USDCx
+ *
+ * Get Temple DEX orderbook depth for a trading pair.
+ */
+marketRouter.get('/orderbook', async (req, res) => {
+  try {
+    const { from, to } = req.query;
+    if (!from || !to) {
+      return res.status(400).json({ success: false, error: 'from, to required' });
+    }
+    const orderbook = await templeClient.getOrderbook(String(from), String(to));
+    res.json({ success: true, data: orderbook });
+  } catch (err: any) {
+    res.json({ success: true, data: null });
   }
 });

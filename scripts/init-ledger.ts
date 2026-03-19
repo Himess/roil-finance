@@ -73,7 +73,10 @@ async function main(): Promise<void> {
         // Use the hint as a fallback identifier — in cn-quickstart the party ID
         // follows the pattern hint::fingerprint. We store just the hint for now;
         // the caller can override via env vars.
-        console.log(`  ${displayName}: already exists (using hint "${hint}")`);
+        // Note: The Ledger API v2 does not expose a listParties endpoint that
+        // would let us resolve the full party ID from the hint. If the party
+        // already exists, set the full ID via PLATFORM_PARTY env var.
+        console.log(`  ${displayName}: already exists (using hint "${hint}") — set full party ID via env var if needed`);
         parties[hint] = hint;
         return hint;
       }
@@ -156,7 +159,8 @@ async function main(): Promise<void> {
           user: userParty,
           monthId,
           txCount: 0,
-          tier: 'Bronze',
+          tier: { tag: 'Bronze', value: {} },
+          previousTier: null, // Canton JSON API v2: null = Daml Optional None
           consecutiveMonths: 0,
           totalRewardsEarned: '0.0',
         },
@@ -196,7 +200,8 @@ async function main(): Promise<void> {
   console.log('  Environment variables for .env:');
   console.log(`    PLATFORM_PARTY=${parties['platform'] || platformParty}`);
   console.log(`    JSON_API_URL=${JSON_API_URL}`);
-  console.log(`    JWT_MODE=unsafe`);
+  console.log(`    JWT_MODE=${config.network === 'localnet' ? 'unsafe' : 'rs256'}  # Use rs256 or es256 for devnet/mainnet`);
+  console.log(`    FEATURED_APP_RIGHT_CID=  # Set after GSF Featured App registration`);
   console.log('');
   console.log('  Next: cd backend && npm run dev');
   console.log('');

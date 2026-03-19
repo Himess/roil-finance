@@ -20,7 +20,7 @@ template DCASchedule
   where
     signatory platform
     observer user
-    ensure amountPerBuy > 0.0
+    ensure amountPerBuy > 0.0 && sourceAsset /= targetAsset
 
     -- Execute a single DCA buy
     -- Called by backend/trigger on schedule
@@ -91,6 +91,7 @@ template DCAExecution
   where
     signatory platform
     observer user
+    ensure sourceAmount > 0.0
 
     -- Platform fills in the execution result after Cantex swap
     choice CompleteDCAExecution : ContractId DCALog
@@ -99,6 +100,7 @@ template DCAExecution
         completedAt    : Text
       controller platform
       do
+        assertMsg "Execution must be Pending" (status == Pending)
         logCid <- create DCALog with
           platform
           user
@@ -126,6 +128,7 @@ template DCAExecution
         reason : Text
       controller platform
       do
+        assertMsg "Execution must be Pending" (status == Pending)
         create this with status = Failed reason
 
 -- | Immutable log of a completed DCA execution

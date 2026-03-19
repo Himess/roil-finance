@@ -3,15 +3,6 @@
 -- real tokens (CC, USDCx, CBTC) on the Canton Network.
 module TokenTransfer where
 
--- | Represents a token holding (mirrors CIP-0056 Holding view)
-data TokenHolding = TokenHolding
-  with
-    owner : Party
-    instrumentId : Text      -- e.g., "CC", "USDCx", "CBTC"
-    instrumentAdmin : Party  -- token issuer/admin
-    amount : Decimal
-  deriving (Eq, Show)
-
 -- | Status of a transfer or swap
 data TransferStatus = Pending | Completed | Rejected | Cancelled
   deriving (Eq, Show)
@@ -31,10 +22,12 @@ template TransferRequest
   where
     signatory platform, sender
     observer receiver
+    ensure amount > 0.0
 
     choice ApproveTransfer : ContractId TransferLog
       controller receiver
       do
+        assertMsg "Transfer must be Pending" (status == Pending)
         create TransferLog with
           platform; sender; receiver; instrumentId
           instrumentAdmin; amount; memo
@@ -42,7 +35,9 @@ template TransferRequest
 
     choice RejectTransfer : ContractId TransferRequest
       controller receiver
-      do create this with status = Rejected
+      do
+        assertMsg "Transfer must be Pending" (status == Pending)
+        create this with status = Rejected
 
     choice WithdrawTransfer : ()
       controller sender
@@ -60,10 +55,12 @@ template SwapRequest
     buyAsset : Text
     buyAdmin : Party
     buyAmount : Decimal      -- expected amount (from quote)
+    minBuyAmount : Decimal   -- minimum acceptable buy amount (slippage protection)
     status : TransferStatus
     createdAt : Text
   where
     signatory platform, user
+    ensure sellAmount > 0.0 && buyAmount > 0.0 && minBuyAmount >= 0.0 && minBuyAmount <= buyAmount
 
     -- Platform executes the swap (after Cantex confirmation)
     choice ExecuteSwap : ContractId SwapLog
@@ -72,6 +69,7 @@ template SwapRequest
         executedAt : Text
       controller platform
       do
+        assertMsg "Slippage exceeded" (actualBuyAmount >= minBuyAmount)
         create SwapLog with
           platform; user
           sellAsset; sellAmount

@@ -2,6 +2,22 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { config } from '@/config';
 
 // ---------------------------------------------------------------------------
+// Auth token management — shared across all hooks
+// ---------------------------------------------------------------------------
+
+let authToken: string | null = null;
+
+/** Set the JWT auth token to be sent with all API requests */
+export function setAuthToken(token: string | null) {
+  authToken = token;
+}
+
+/** Get the current auth token (for inspection/debugging) */
+export function getAuthToken(): string | null {
+  return authToken;
+}
+
+// ---------------------------------------------------------------------------
 // Backend connection status — shared across all hooks
 // ---------------------------------------------------------------------------
 
@@ -49,6 +65,7 @@ async function apiFetch<T>(
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
+      ...(authToken ? { 'Authorization': `Bearer ${authToken}` } : {}),
       ...options?.headers,
     },
     ...options,

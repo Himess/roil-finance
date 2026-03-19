@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { RebalanceEngine } from '../src/engine/rebalance.js';
+import { RebalanceEngine, isSlippageAcceptable } from '../src/engine/rebalance.js';
 import type { Holding, TargetAllocation, SwapLeg } from '../src/engine/rebalance.js';
 
 // ---------------------------------------------------------------------------
@@ -233,6 +233,52 @@ describe('RebalanceEngine', () => {
       // Total CC sold should be substantial
       const totalCCSold = ccSells.reduce((sum, l) => sum + l.fromAmount, 0);
       expect(totalCCSold).toBeGreaterThan(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Slippage check
+  // -----------------------------------------------------------------------
+
+  describe('isSlippageAcceptable', () => {
+    it('accepts output within tolerance', () => {
+      // Expected 100, got 99 → 1% slippage, within default 2% tolerance
+      expect(isSlippageAcceptable(100, 99)).toBe(true);
+
+      // Expected 100, got 98.5 → 1.5% slippage, within 2% tolerance
+      expect(isSlippageAcceptable(100, 98.5)).toBe(true);
+
+      // Expected 100, got 100 → 0% slippage
+      expect(isSlippageAcceptable(100, 100)).toBe(true);
+
+      // Expected 100, got 105 → negative slippage (better than expected)
+      expect(isSlippageAcceptable(100, 105)).toBe(true);
+    });
+
+    it('rejects output below tolerance', () => {
+      // Expected 100, got 97 → 3% slippage, exceeds default 2% tolerance
+      expect(isSlippageAcceptable(100, 97)).toBe(false);
+
+      // Expected 100, got 90 → 10% slippage
+      expect(isSlippageAcceptable(100, 90)).toBe(false);
+
+      // Custom tolerance: 1%
+      expect(isSlippageAcceptable(100, 98.5, 0.01)).toBe(false);
+    });
+
+    it('handles zero expected amount', () => {
+      // When expected output is 0 or negative, function returns true
+      expect(isSlippageAcceptable(0, 0)).toBe(true);
+      expect(isSlippageAcceptable(0, 10)).toBe(true);
+      expect(isSlippageAcceptable(-1, 5)).toBe(true);
+    });
+
+    it('handles exact tolerance boundary', () => {
+      // Expected 100, got 98 → exactly 2% slippage = exactly at tolerance
+      expect(isSlippageAcceptable(100, 98, 0.02)).toBe(true);
+
+      // Expected 100, got 97.99 → just barely over 2% tolerance
+      expect(isSlippageAcceptable(100, 97.99, 0.02)).toBe(false);
     });
   });
 });

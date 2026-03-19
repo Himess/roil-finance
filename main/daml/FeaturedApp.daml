@@ -24,6 +24,7 @@ template ActivityRecord
     platform : Party
     user : Party
     activityType : ActivityType
+    activityId : Text          -- unique ID for deduplication
     description : Text
     timestamp : Text
   where
@@ -46,6 +47,7 @@ template FeaturedAppConfig
       with
         user : Party
         activityType : ActivityType
+        activityId : Text
         description : Text
         timestamp : Text
       controller platform
@@ -57,7 +59,15 @@ template FeaturedAppConfig
 
         configCid <- create this with totalActivities = totalActivities + 1
         activityCid <- create ActivityRecord with
-          platform; user; activityType; description; timestamp
+          platform; user; activityType; activityId; description; timestamp
+
+        -- Canton Network Integration:
+        -- On devnet/mainnet, exercise FeaturedAppRight_CreateActivityMarker here:
+        -- exerciseCmd featuredAppRightCid FeaturedAppRight_CreateActivityMarker with
+        --   provider = platform
+        --   activityMarkerDescription = description
+        -- This creates an AppRewardCoupon automatically via Super Validator automation
+
         pure (configCid, activityCid)
 
     -- Update registration status (after registering with GSF)

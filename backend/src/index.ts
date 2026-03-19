@@ -8,6 +8,10 @@ import { compoundEngine } from './engine/compound.js';
 import { priceOracle } from './services/price-oracle.js';
 import { logger } from './monitoring/logger.js';
 import { metrics, METRICS } from './monitoring/metrics.js';
+import { transactionStream } from './services/transaction-stream.js';
+// Performance tracker is loaded eagerly so the in-memory store is ready
+// for snapshot recording during auto-rebalance checks.
+import './services/performance-tracker.js';
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -41,6 +45,7 @@ cron.schedule(config.dcaCronSchedule, async () => {
 
   try {
     // Check and auto-rebalance portfolios exceeding drift threshold
+    // (also records performance snapshots for all active portfolios)
     await rebalanceEngine.checkAndAutoRebalance();
   } catch (err) {
     logger.error('Auto-rebalance error', {
@@ -88,7 +93,7 @@ cron.schedule('0 * * * *', async () => {
 // Start server
 // ---------------------------------------------------------------------------
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   // Startup gauges
   metrics.setGauge(METRICS.activePortfolios, 0);
   metrics.setGauge(METRICS.activeDcaSchedules, 0);
@@ -96,6 +101,13 @@ app.listen(config.port, () => {
 
   // Start price oracle polling (every 30 seconds)
   priceOracle.startPolling(30_000);
+
+  // Start transaction stream for real-time contract events
+  if (config.network !== 'localnet') {
+    transactionStream.start().catch(err => {
+      logger.warn('Transaction stream failed to start', { error: String(err) });
+    });
+  }
 
   logger.info('Canton Private Rebalancer backend started', {
     port: config.port,
@@ -106,3 +118,32 @@ app.listen(config.port, () => {
     priceOraclePolling: '30s',
   });
 });
+
+// ---------------------------------------------------------------------------
+// Graceful shutdown
+// ---------------------------------------------------------------------------
+
+function gracefulShutdown(signal: string): void {
+  logger.info(`Received ${signal}, shutting down gracefully...`);
+
+  // Stop transaction stream
+  transactionStream.stop();
+
+  // Stop price oracle polling
+  priceOracle.stopPolling();
+
+  // Stop all cron jobs
+  const tasks = cron.getTasks();
+  for (const [, task] of tasks) {
+    task.stop();
+  }
+
+  // Close HTTP server
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));

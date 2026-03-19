@@ -77,11 +77,16 @@ class MetricsRegistry {
   // Histogram: distribution of values
   // -------------------------------------------------------------------------
 
+  private static readonly MAX_HISTOGRAM_VALUES = 10000;
+
   observe(name: string, value: number, labels: Record<string, string> = {}): void {
     const key = labelKey(name, labels);
     const existing = this.histograms.get(key);
     if (existing) {
       existing.values.push(value);
+      if (existing.values.length > MetricsRegistry.MAX_HISTOGRAM_VALUES) {
+        existing.values.splice(0, existing.values.length - MetricsRegistry.MAX_HISTOGRAM_VALUES);
+      }
     } else {
       this.histograms.set(key, { values: [value], labels, name });
     }

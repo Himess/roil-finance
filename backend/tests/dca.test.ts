@@ -1,36 +1,74 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // ---------------------------------------------------------------------------
+// Mock dependencies so dca.ts module can be imported without side effects
+// ---------------------------------------------------------------------------
+
+vi.mock('../src/config.js', () => ({
+  config: {
+    platformParty: 'test-platform::1220abc',
+    network: 'localnet',
+  },
+  TEMPLATES: {
+    DCASchedule: '#canton-rebalancer:DCA:DCASchedule',
+    DCAExecution: '#canton-rebalancer:DCA:DCAExecution',
+    DCALog: '#canton-rebalancer:DCA:DCALog',
+  },
+}));
+
+vi.mock('../src/ledger.js', () => ({
+  ledger: {
+    query: vi.fn().mockResolvedValue([]),
+    createAs: vi.fn().mockResolvedValue('mock-cid'),
+    exerciseAs: vi.fn().mockResolvedValue('mock-result'),
+  },
+}));
+
+vi.mock('../src/cantex.js', () => ({
+  cantex: {
+    executeSwap: vi.fn().mockResolvedValue({
+      txId: 'mock-tx', fromAsset: 'USDCx', toAsset: 'CC',
+      inputAmount: 100, outputAmount: 666, fee: 0.3, timestamp: new Date().toISOString(),
+    }),
+  },
+}));
+
+vi.mock('../src/engine/featured-app.js', () => ({
+  featuredApp: {
+    recordActivity: vi.fn().mockResolvedValue(undefined),
+  },
+}));
+
+vi.mock('../src/monitoring/logger.js', () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
+import {
+  frequencyToMs,
+  parseFrequency,
+  isDue as isDueSource,
+  computeNextExecution,
+} from '../src/engine/dca.js';
+import type { DCASchedulePayload } from '../src/engine/dca.js';
+
+// ---------------------------------------------------------------------------
 // DCA scheduling logic tests
 //
 // These tests verify the schedule-checking logic without hitting the ledger.
-// We extract the pure functions (isDue, computeNextExecution, frequencyToMs)
-// and test them directly.
+// The pure functions (isDue, computeNextExecution, frequencyToMs, parseFrequency)
+// are imported directly from the source module.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Extracted pure functions (mirroring dca.ts internal logic)
+// Test adapter for isDue
+//
+// The source isDue uses Date.now() internally, so we wrap it with vi.spyOn
+// to control the current time. The test signature remains unchanged.
 // ---------------------------------------------------------------------------
-
-function frequencyToMs(freq: string): number {
-  switch (freq) {
-    case 'Hourly':
-      return 60 * 60 * 1000;
-    case 'Daily':
-      return 24 * 60 * 60 * 1000;
-    case 'Weekly':
-      return 7 * 24 * 60 * 60 * 1000;
-    case 'Monthly':
-      return 30 * 24 * 60 * 60 * 1000;
-    default:
-      return 24 * 60 * 60 * 1000;
-  }
-}
-
-function parseFrequency(freq: string | { tag: string }): string {
-  if (typeof freq === 'string') return freq;
-  return freq.tag ?? 'Unknown';
-}
 
 function isDue(
   frequency: string,
@@ -40,27 +78,28 @@ function isDue(
   now: number,
 ): boolean {
   if (!isActive) return false;
-  const interval = frequencyToMs(frequency);
 
-  if (lastExecution) {
-    const lastTs = new Date(lastExecution).getTime();
-    return now - lastTs >= interval;
+  // Build a minimal DCASchedulePayload for the source function
+  const schedule: DCASchedulePayload = {
+    platform: 'test',
+    user: 'test-user',
+    sourceAsset: { symbol: 'USDCx', admin: 'admin' },
+    targetAsset: { symbol: 'CC', admin: 'admin' },
+    amountPerBuy: '100',
+    frequency,
+    totalExecutions: 0,
+    isActive,
+    createdAt,
+  };
+
+  // Temporarily override Date.now to control timing
+  const originalNow = Date.now;
+  Date.now = () => now;
+  try {
+    return isDueSource(schedule, lastExecution);
+  } finally {
+    Date.now = originalNow;
   }
-
-  const createdTs = new Date(createdAt).getTime();
-  return now - createdTs >= interval;
-}
-
-function computeNextExecution(
-  freq: string,
-  lastExecution: string | null,
-  createdAt: string,
-): string | null {
-  const base = lastExecution ?? createdAt;
-  const baseTs = new Date(base).getTime();
-  if (isNaN(baseTs)) return null;
-  const interval = frequencyToMs(freq);
-  return new Date(baseTs + interval).toISOString();
 }
 
 // ---------------------------------------------------------------------------

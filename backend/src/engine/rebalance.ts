@@ -1,6 +1,67 @@
 import { config, TEMPLATES } from '../config.js';
 import { ledger, type DamlContract } from '../ledger.js';
 import { cantex } from '../cantex.js';
+import { smartRouter } from '../services/smart-router.js';
+import { featuredApp } from './featured-app.js';
+import { rewardsEngine } from './rewards.js';
+import { logger } from '../monitoring/logger.js';
+import { recordSnapshot } from '../services/performance-tracker.js';
+import { tokenTransferService } from '../services/token-transfer.js';
+
+// ---------------------------------------------------------------------------
+// Daml Trigger Migration Path
+// ---------------------------------------------------------------------------
+// The current auto-rebalance runs via Node.js cron (index.ts).
+// For production Canton deployment, consider migrating to Daml Triggers:
+//
+// 1. Create a Daml Trigger in trigger/src/RebalanceTrigger.daml:
+//    - Rule: when a Portfolio's SyncHoldings is exercised (holdings change)
+//    - Action: compute drift, if exceeds threshold, exercise InitiateRebalance
+//    - Advantage: runs on the participant node, sub-second latency
+//
+// 2. Create a DCA Trigger:
+//    - Rule: periodic timer (Daml Trigger supports time-based rules)
+//    - Action: check due schedules, execute DCA buys
+//
+// 3. Benefits over cron:
+//    - No separate backend process needed
+//    - Runs inside the Canton participant (lower latency)
+//    - Automatically handles ledger events (reactive, not polling)
+//    - Built-in retry and error handling
+//
+// 4. Migration steps:
+//    a. Add trigger/ directory with Daml trigger code
+//    b. Deploy trigger alongside DAR: `daml trigger --trigger-name=RebalanceTrigger`
+//    c. Gradually shift cron jobs to triggers
+//    d. Keep cron as fallback during transition
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Slippage protection
+// ---------------------------------------------------------------------------
+
+/** Maximum allowed slippage tolerance as a fraction (e.g. 0.02 = 2%) */
+const SLIPPAGE_TOLERANCE = Number(process.env.SLIPPAGE_TOLERANCE) || 0.02;
+
+/** Platform fee rate applied to each swap output (e.g. 0.001 = 0.1%) */
+const PLATFORM_FEE_RATE = parseFloat(process.env.PLATFORM_FEE_RATE || '0.001');
+
+/** Fallback CC price in USDCx when live price is unavailable */
+const CC_FALLBACK_PRICE = parseFloat(process.env.CC_FALLBACK_PRICE || '0.15');
+
+/**
+ * Check if actual swap output is within the acceptable slippage tolerance
+ * of the expected output. Returns true if slippage is acceptable.
+ */
+export function isSlippageAcceptable(
+  expectedOutput: number,
+  actualOutput: number,
+  tolerance: number = SLIPPAGE_TOLERANCE,
+): boolean {
+  if (expectedOutput <= 0) return true;
+  const slippage = (expectedOutput - actualOutput) / expectedOutput;
+  return slippage <= tolerance;
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,6 +111,31 @@ export interface PortfolioPayload {
   triggerMode: Record<string, unknown>;
   totalRebalances: number;
   isActive: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Price condition checking
+// ---------------------------------------------------------------------------
+
+/**
+ * Check if a PriceCondition trigger mode's condition is met.
+ * Returns true if the current price satisfies the condition.
+ */
+function checkPriceCondition(
+  triggerMode: { tag: string; value?: any },
+  prices: Record<string, number>,
+): boolean {
+  if (triggerMode.tag !== 'PriceCondition') return false;
+  const pc = triggerMode.value;
+  if (!pc?.conditionAsset || !pc?.targetPrice || !pc?.conditionAction) return false;
+
+  const currentPrice = prices[pc.conditionAsset];
+  if (!currentPrice) return false;
+
+  const target = parseFloat(String(pc.targetPrice));
+  if (pc.conditionAction === 'sell_above') return currentPrice >= target;
+  if (pc.conditionAction === 'buy_below') return currentPrice <= target;
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,9 +215,9 @@ export class RebalanceEngine {
     for (const target of targets) {
       const { symbol } = target.asset;
       const holding = holdings.find((h) => h.asset.symbol === symbol);
-      const currentValue = holding ? holding.valueCc * (prices.CC ?? 0.15) : 0;
+      const currentValue = holding ? holding.valueCc * (prices.CC ?? CC_FALLBACK_PRICE) : 0;
       // Convert totalValue from CC to USDCx for uniform comparison
-      const totalValueUsd = totalValue * (prices.CC ?? 0.15);
+      const totalValueUsd = totalValue * (prices.CC ?? CC_FALLBACK_PRICE);
       const targetValue = (target.targetPct / 100) * totalValueUsd;
       const delta = currentValue - targetValue;
 
@@ -239,7 +325,7 @@ export class RebalanceEngine {
         TEMPLATES.Portfolio,
         portfolioContractId,
         'InitiateRebalance',
-        {},
+        { requestedAt: new Date().toISOString() },
         platform,
       );
       const [newPortfolioCid, requestCid] = initiateResult;
@@ -261,20 +347,84 @@ export class RebalanceEngine {
       );
       const updatedRequestCid = setLegsResult;
 
-      // 5. Execute each swap via Cantex
+      // ---------------------------------------------------------------------------
+      // Canton Atomic Rebalance (Future Enhancement)
+      // ---------------------------------------------------------------------------
+      // Canton's transaction model supports atomic multi-step workflows.
+      // Instead of executing swaps sequentially (current approach), all swap legs
+      // could be submitted as a single Daml transaction that either ALL succeed
+      // or ALL fail. This prevents partial execution failures.
+      //
+      // Implementation approach:
+      // 1. Create a single Daml choice "ExecuteAtomicRebalance" on RebalanceRequest
+      //    that takes a list of swap intents
+      // 2. The choice body exercises each swap within the same transaction context
+      // 3. If any swap fails, the entire transaction rolls back
+      //
+      // This is impossible on EVM chains where each swap is a separate transaction
+      // subject to MEV, front-running, and partial failure.
+      // ---------------------------------------------------------------------------
+
+      // 5. Execute each swap via Smart Router (DEX aggregator) with PRE-SWAP slippage protection
       const executedLegs: SwapLeg[] = [];
       for (const leg of plannedLegs) {
-        const swap = await cantex.executeSwap(
+        // Step 5a: Get the best quote across all DEXes BEFORE executing to check slippage
+        const quote = await smartRouter.getBestQuote(
           leg.fromAsset.symbol,
           leg.toAsset.symbol,
           leg.fromAmount,
         );
+
+        // Step 5b: Pre-swap slippage check — reject if quote is outside tolerance
+        if (!isSlippageAcceptable(leg.toAmount, quote.outputAmount)) {
+          const slippagePct = ((leg.toAmount - quote.outputAmount) / leg.toAmount * 100).toFixed(2);
+          logger.warn(
+            `[rebalance] Skipping swap leg: ${leg.fromAsset.symbol}->${leg.toAsset.symbol} ` +
+            `expected ${leg.toAmount.toFixed(6)}, quoted ${quote.outputAmount.toFixed(6)} ` +
+            `(slippage: ${slippagePct}%, tolerance: ${(SLIPPAGE_TOLERANCE * 100).toFixed(1)}%)`,
+          );
+          // Skip this leg — do not execute, slippage too high
+          continue;
+        }
+
+        // Step 5c: Slippage acceptable — execute the swap via best DEX
+        const swap = await smartRouter.executeSwap(
+          leg.fromAsset.symbol,
+          leg.toAsset.symbol,
+          leg.fromAmount,
+        );
+
+        logger.info(
+          `[rebalance] Swap executed via ${swap.source}: ${leg.fromAsset.symbol} → ${leg.toAsset.symbol}`,
+          { ...swap },
+        );
+
+        // Step 5d: Deduct platform fee from swap output
+        const platformFee = swap.outputAmount * PLATFORM_FEE_RATE;
+        const netOutputAmount = swap.outputAmount - platformFee;
+        logger.info(
+          `[rebalance] Platform fee: ${platformFee.toFixed(6)} ${leg.toAsset.symbol} (${(PLATFORM_FEE_RATE * 100).toFixed(2)}% of ${swap.outputAmount.toFixed(6)})`,
+        );
+
         executedLegs.push({
           fromAsset: leg.fromAsset,
           toAsset: leg.toAsset,
-          fromAmount: swap.inputAmount,
-          toAmount: swap.outputAmount,
+          fromAmount: swap.inputAmount ?? leg.fromAmount,
+          toAmount: netOutputAmount,
         });
+      }
+
+      // 5e. If all swap legs were skipped due to slippage, fail instead of completing
+      if (executedLegs.length === 0) {
+        logger.warn('All swap legs skipped due to slippage — failing rebalance instead of completing');
+        await ledger.exerciseAs(
+          TEMPLATES.RebalanceRequest,
+          updatedRequestCid,
+          'FailRebalance',
+          { reason: 'All swap legs skipped due to slippage tolerance' },
+          platform,
+        );
+        return { success: false, swapLegs: [], driftBefore, driftAfter: driftBefore, error: 'All swaps exceeded slippage tolerance' };
       }
 
       // 6. Complete rebalance on ledger
@@ -296,8 +446,24 @@ export class RebalanceEngine {
         platform,
       );
 
-      // 7. Sync holdings (simplified — in production query real balances)
-      const updatedHoldings = await this.computeUpdatedHoldings(holdings, executedLegs);
+      // 7. Sync holdings — query actual balances for ground truth, fall back to computed
+      let updatedHoldings = await this.computeUpdatedHoldings(holdings, executedLegs);
+      try {
+        const realHoldings = await tokenTransferService.queryHoldings(portfolio.payload.user);
+        if (realHoldings.length > 0) {
+          const prices = await cantex.getPrices();
+          const ccPrice = prices.CC ?? CC_FALLBACK_PRICE;
+          updatedHoldings = realHoldings.map(h => ({
+            asset: { symbol: h.instrumentId, admin: h.instrumentAdmin || '' },
+            amount: h.amount,
+            valueCc: (h.amount * (prices[h.instrumentId] ?? 0)) / ccPrice,
+          }));
+          logger.info('[rebalance] Using real holdings from token service for SyncHoldings');
+        }
+      } catch {
+        // Fallback to computed holdings if query fails
+        logger.warn('[rebalance] Failed to query real holdings, using computed values');
+      }
       await ledger.exerciseAs(
         TEMPLATES.Portfolio,
         newPortfolioCid,
@@ -314,6 +480,45 @@ export class RebalanceEngine {
 
       const driftAfter = this.calculateDrift(updatedHoldings, targets).maxDrift;
 
+      // 8. Record Featured App activity for rebalance completion
+      try {
+        await featuredApp.recordActivity(
+          portfolio.payload.user,
+          'Rebalance',
+          `Rebalance: drift ${driftBefore.toFixed(2)}% -> ${driftAfter.toFixed(2)}%, ${executedLegs.length} swaps`,
+        );
+      } catch {
+        // Best effort — don't fail the rebalance for activity recording
+      }
+
+      // 9. Record performance snapshot after successful rebalance
+      try {
+        const totalValueCc = updatedHoldings.reduce((sum, h) => sum + h.valueCc, 0);
+        recordSnapshot(
+          portfolio.payload.user,
+          totalValueCc,
+          updatedHoldings.map((h) => ({ asset: h.asset.symbol, amount: h.amount, valueCc: h.valueCc })),
+        );
+      } catch {
+        // Best effort — don't fail the rebalance for snapshot recording
+      }
+
+      // 10. Record transaction for reward tracking
+      try {
+        const totalSwapValue = executedLegs.reduce((sum, leg) => sum + leg.toAmount, 0);
+        await rewardsEngine.recordTransaction(portfolio.payload.user, totalSwapValue);
+      } catch (e) {
+        logger.warn('Failed to record reward TX after rebalance', { error: String(e) });
+      }
+
+      logger.info(`Rebalance complete: driftBefore=${driftBefore.toFixed(2)}%, driftAfter=${driftAfter.toFixed(2)}%`, {
+        component: 'rebalance',
+        user: portfolio.payload.user,
+        driftBefore,
+        driftAfter,
+        swapLegs: executedLegs.length,
+      });
+
       return { success: true, swapLegs: executedLegs, driftBefore, driftAfter };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -322,8 +527,11 @@ export class RebalanceEngine {
       try {
         const requests = await ledger.query(TEMPLATES.RebalanceRequest, platform);
         const pending = requests.find(
-          (r) => (r.payload as Record<string, unknown>).status === 'Pending'
-            || (r.payload as Record<string, unknown>).status === 'Executing',
+          (r) => {
+            const status = (r.payload as Record<string, unknown>).status;
+            const statusTag = typeof status === 'string' ? status : (status as any)?.tag;
+            return statusTag === 'Pending' || statusTag === 'Executing';
+          },
         );
         if (pending) {
           await ledger.exerciseAs(
@@ -355,32 +563,75 @@ export class RebalanceEngine {
 
     try {
       const portfolios = await ledger.query<PortfolioPayload>(TEMPLATES.Portfolio, platform);
+      const prices = await cantex.getPrices();
+
+      let consecutiveFailures = 0;
+      const MAX_CONSECUTIVE_FAILURES = 3;
 
       for (const portfolio of portfolios) {
-        const { isActive, triggerMode, holdings, targets } = portfolio.payload;
+        const { isActive, triggerMode, holdings, targets, user } = portfolio.payload;
         if (!isActive) continue;
 
-        // Only auto-rebalance portfolios with DriftThreshold trigger mode
-        const threshold = this.extractDriftThreshold(triggerMode);
-        if (threshold === null) continue;
-
-        const { maxDrift } = this.calculateDrift(holdings, targets);
-        if (maxDrift >= threshold) {
-          console.log(
-            `[auto-rebalance] Portfolio ${portfolio.contractId} drift=${maxDrift.toFixed(2)}% >= threshold=${threshold}% — triggering rebalance`,
+        // Record performance snapshot for every active portfolio
+        try {
+          const totalValueCc = holdings.reduce((sum, h) => sum + h.valueCc, 0);
+          recordSnapshot(
+            user,
+            totalValueCc,
+            holdings.map((h) => ({ asset: h.asset.symbol, amount: h.amount, valueCc: h.valueCc })),
           );
+        } catch {
+          // Best effort — don't fail the auto-rebalance loop for snapshot recording
+        }
+
+        let shouldRebalance = false;
+
+        // Check DriftThreshold trigger mode
+        const threshold = this.extractDriftThreshold(triggerMode);
+        if (threshold !== null) {
+          const { maxDrift } = this.calculateDrift(holdings, targets);
+          if (maxDrift >= threshold) {
+            logger.info(
+              `Portfolio ${portfolio.contractId} drift=${maxDrift.toFixed(2)}% >= threshold=${threshold}% — triggering rebalance`,
+              { component: 'auto-rebalance' },
+            );
+            shouldRebalance = true;
+          }
+        }
+
+        // Check PriceCondition trigger mode
+        if (!shouldRebalance && checkPriceCondition(triggerMode as { tag: string; value?: any }, prices)) {
+          const pc = (triggerMode as any).value;
+          logger.info(
+            `Portfolio ${portfolio.contractId} price condition met: ${pc?.conditionAsset} ${pc?.conditionAction} ${pc?.targetPrice} (current: ${prices[pc?.conditionAsset]}) — triggering rebalance`,
+            { component: 'auto-rebalance' },
+          );
+          shouldRebalance = true;
+        }
+
+        if (shouldRebalance) {
           const result = await this.executeRebalance(portfolio.contractId);
           if (result.success) {
-            console.log(
-              `[auto-rebalance] Completed: drift ${result.driftBefore.toFixed(2)}% → ${result.driftAfter.toFixed(2)}%`,
+            consecutiveFailures = 0;
+            logger.info(
+              `Completed: drift ${result.driftBefore.toFixed(2)}% → ${result.driftAfter.toFixed(2)}%`,
+              { component: 'auto-rebalance' },
             );
           } else {
-            console.error(`[auto-rebalance] Failed: ${result.error}`);
+            consecutiveFailures++;
+            logger.error(`Failed: ${result.error}`, { component: 'auto-rebalance' });
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+              logger.error('Auto-rebalance aborted: too many consecutive failures', { failures: consecutiveFailures });
+              break;
+            }
           }
         }
       }
     } catch (err) {
-      console.error('[auto-rebalance] Error scanning portfolios:', err);
+      logger.error('Error scanning portfolios', {
+        component: 'auto-rebalance',
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
   }
 
@@ -397,7 +648,7 @@ export class RebalanceEngine {
     executedLegs: SwapLeg[],
   ): Promise<Holding[]> {
     const prices = await cantex.getPrices();
-    const ccPrice = prices.CC ?? 0.15;
+    const ccPrice = prices.CC ?? CC_FALLBACK_PRICE;
 
     // Clone holdings into a mutable map
     const holdingMap = new Map<string, Holding>();
@@ -444,7 +695,32 @@ export class RebalanceEngine {
     }
     return null;
   }
+
+  // -----------------------------------------------------------------------
+  // Dependency Injection Support
+  // -----------------------------------------------------------------------
+
+  static createWithDeps(deps: {
+    ledger: typeof ledger;
+    cantex: typeof cantex;
+    config: typeof config;
+  }): RebalanceEngine {
+    // For future DI support — currently uses module-level singletons
+    // To migrate: store deps as instance fields and use this.ledger instead of ledger
+    return new RebalanceEngine();
+  }
 }
+
+// ---------------------------------------------------------------------------
+// Dependency Injection Support
+// ---------------------------------------------------------------------------
+// For testing and multi-instance deployment, engines can be instantiated with
+// custom dependencies via createWithDeps(). Currently module-level singletons
+// are used for simplicity. Migration path:
+// 1. Change module-level `ledger`/`cantex`/`config` references to this.deps.*
+// 2. Update tests to inject mocks via createWithDeps()
+// 3. Update index.ts to create engines with injected dependencies
+// ---------------------------------------------------------------------------
 
 /** Singleton instance */
 export const rebalanceEngine = new RebalanceEngine();

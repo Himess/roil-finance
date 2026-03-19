@@ -24,9 +24,9 @@ services:
       - PORT=3001
       - CANTON_NETWORK=localnet
       - JSON_API_URL=http://json-api-app-provider:3975
-      - GRPC_API_URL=http://participant-app-provider:3901
+      - GRPC_API_URL=https://participant-app-provider:3901
       - SCAN_URL=http://scan:4000
-      - JWT_MODE=unsafe
+      - JWT_MODE=${JWT_MODE:-unsafe}
       - JWT_AUDIENCE=https://daml.com/jwt/aud/participant/sandbox
       - LEDGER_USER_ID=app-provider
       - APPLICATION_ID=canton-rebalancer
@@ -48,14 +48,19 @@ services:
       dockerfile: Dockerfile
     container_name: rebalancer-frontend
     ports:
-      - "5173:80"
+      - "5173:8080"
     depends_on:
       rebalancer-backend:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:80/"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
       interval: 10s
       timeout: 5s
       retries: 3
       start_period: 5s
+
+networks:
+  default:
+    name: cn-quickstart_default
+    external: true

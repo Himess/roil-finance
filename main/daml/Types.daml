@@ -31,10 +31,19 @@ data DCAFrequency
   | Monthly
   deriving (Eq, Show)
 
+-- | Price condition configuration
+data PriceConditionConfig = PriceConditionConfig
+  with
+    conditionAsset  : Text     -- asset to monitor (e.g., "CBTC")
+    targetPrice     : Decimal  -- target price threshold
+    conditionAction : Text     -- "sell_above" or "buy_below"
+  deriving (Eq, Show)
+
 -- | Rebalance trigger mode
 data TriggerMode
-  = Manual                   -- user-triggered only
-  | DriftThreshold Decimal   -- auto when drift exceeds threshold %
+  = Manual                              -- user-triggered only
+  | DriftThreshold Decimal              -- auto when drift exceeds threshold %
+  | PriceCondition PriceConditionConfig -- auto when price condition met
   deriving (Eq, Show)
 
 -- | Reward tier levels
@@ -86,9 +95,17 @@ getTier txCount
   | txCount <= 500 = Gold
   | otherwise      = Platinum
 
+-- | Check for duplicate assets in a list of targets
+hasDuplicateAssets : [TargetAllocation] -> Bool
+hasDuplicateAssets [] = False
+hasDuplicateAssets (t :: rest) =
+  any (\r -> r.asset == t.asset) rest || hasDuplicateAssets rest
+
 -- | Validate that target allocations sum to 100%
 validateTargets : [TargetAllocation] -> Bool
 validateTargets targets =
   let total = foldl (\acc t -> acc + t.targetPct) 0.0 targets
-  in total >= 99.9 && total <= 100.1  -- small tolerance for rounding
+      allNonNegative = all (\t -> t.targetPct >= 0.0) targets
+      noDuplicates = not (hasDuplicateAssets targets)
+  in allNonNegative && noDuplicates && total >= 99.9 && total <= 100.1  -- small tolerance for rounding
 
