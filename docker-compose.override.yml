@@ -1,5 +1,5 @@
 # =============================================================================
-# Canton Rebalancer — Docker Compose Override
+# Roil — Docker Compose Override
 # =============================================================================
 # This file extends the cn-quickstart docker-compose.yml with the
 # rebalancer backend and frontend services.
@@ -29,8 +29,8 @@ services:
       - JWT_MODE=${JWT_MODE:-unsafe}
       - JWT_AUDIENCE=https://daml.com/jwt/aud/participant/sandbox
       - LEDGER_USER_ID=app-provider
-      - APPLICATION_ID=canton-rebalancer
-      - DAML_PACKAGE_NAME=canton-rebalancer
+      - APPLICATION_ID=roil-finance
+      - DAML_PACKAGE_NAME=roil-finance
     depends_on:
       json-api-app-provider:
         condition: service_healthy

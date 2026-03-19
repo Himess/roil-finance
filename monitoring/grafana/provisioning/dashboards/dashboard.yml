@@ -1,7 +1,7 @@
 apiVersion: 1
 
 providers:
-  - name: 'Canton Rebalancer'
+  - name: 'Roil'
     orgId: 1
     folder: ''
     type: file

@@ -1,4 +1,4 @@
-# Monitoring stack for Canton Rebalancer
+# Monitoring stack for Roil
 # Usage: docker compose -f docker-compose.override.yml -f monitoring/docker-compose.monitoring.yml up -d
 
 version: '3.8'
@@ -28,7 +28,7 @@ services:
       - "3000:3000"
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=canton-rebalancer
+      - GF_SECURITY_ADMIN_PASSWORD=roil-finance
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus

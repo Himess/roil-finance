@@ -1,5 +1,5 @@
 {
-  "name": "Canton Rebalancer Load Test",
+  "name": "Roil Load Test",
   "scenarios": [
     {
       "name": "Health Check Burst",

@@ -1,4 +1,4 @@
--- | Core types for the Canton Private Rebalancer
+-- | Core types for Roil
 module Types where
 
 -- | Supported asset identifiers on Canton Network

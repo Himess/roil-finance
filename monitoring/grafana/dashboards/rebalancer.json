@@ -1,8 +1,8 @@
 {
   "dashboard": {
     "id": null,
-    "uid": "canton-rebalancer",
-    "title": "Canton Rebalancer",
+    "uid": "roil-finance",
+    "title": "Roil",
     "tags": ["canton", "defi", "rebalancer"],
     "timezone": "browser",
     "refresh": "10s",

@@ -291,7 +291,7 @@ testFeaturedApp = script do
   configCid <- submit platform do
     createCmd FeaturedApp.FeaturedAppConfig with
       platform
-      appName = "Canton Rebalancer"
+      appName = "Roil"
       isRegistered = False
       featuredAppRightCid = None
       totalActivities = 0

@@ -83,7 +83,7 @@ export class FeaturedAppEngine {
           TEMPLATES.FeaturedAppConfig,
           {
             platform,
-            appName: 'Canton Rebalancer',
+            appName: 'Roil',
             isRegistered: false,
             featuredAppRightCid: null,
             totalActivities: 0,

@@ -1,5 +1,5 @@
 /**
- * Canton Rebalancer — Ledger Initialization Script
+ * Roil — Ledger Initialization Script
  * =================================================
  * Run with: npx tsx scripts/init-ledger.ts
  *
@@ -33,7 +33,7 @@ function currentMonthId(): string {
 
 async function main(): Promise<void> {
   console.log('');
-  console.log('=== Canton Rebalancer — Ledger Initialization ===');
+  console.log('=== Roil — Ledger Initialization ===');
   console.log(`  JSON API: ${JSON_API_URL}`);
   console.log('');
 

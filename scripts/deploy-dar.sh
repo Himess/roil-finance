@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # =============================================================================
-# Canton Rebalancer — DAR Deployment
+# Roil — DAR Deployment
 # =============================================================================
-# Uploads the canton-rebalancer DAR file to a Canton participant node
+# Uploads the roil-finance DAR file to a Canton participant node
 # via the JSON Ledger API v2.
 #
 # Usage:
@@ -16,9 +16,9 @@ set -euo pipefail
 URL="${1:-http://localhost:3975}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DAR_PATH="${2:-$PROJECT_DIR/main/.daml/dist/canton-rebalancer-0.1.0.dar}"
+DAR_PATH="${2:-$PROJECT_DIR/main/.daml/dist/roil-finance-0.1.0.dar}"
 
-echo "=== Canton Rebalancer — DAR Deployment ==="
+echo "=== Roil — DAR Deployment ==="
 echo ""
 echo "  Target:  $URL"
 echo "  DAR:     $DAR_PATH"
@@ -62,7 +62,7 @@ build_jwt() {
   local header
   header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"roil-finance"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   echo "${header}.${payload}."
 }
 

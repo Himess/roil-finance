@@ -76,7 +76,7 @@ const FREQUENCY_HOURS: Record<CompoundConfig['frequency'], number> = {
 // ---------------------------------------------------------------------------
 
 const STATE_FILE_PATH = process.env.COMPOUND_STATE_PATH
-  || (process.platform === 'win32' ? path.join(process.env.TEMP || 'C:\\Temp', 'canton-rebalancer-compound-state.json') : '/tmp/canton-rebalancer-compound-state.json');
+  || (process.platform === 'win32' ? path.join(process.env.TEMP || 'C:\\Temp', 'roil-finance-compound-state.json') : '/tmp/roil-finance-compound-state.json');
 
 interface PersistedState {
   configs: Array<[string, CompoundConfig]>;
@@ -223,7 +223,7 @@ export function _resetCompoundState(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Auto-compound engine for Canton Rebalancer.
+ * Auto-compound engine for Roil.
  *
  * Detects yield from three sources:
  * 1. **CC Staking** — native staking rewards (~5% APY)

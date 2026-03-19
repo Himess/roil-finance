@@ -9,11 +9,11 @@ vi.mock('../src/config.js', () => ({
     platformParty: 'test-platform::1220abc',
     network: 'localnet',
     minTxValue: 10.0,
-    damlPackageName: 'canton-rebalancer',
+    damlPackageName: 'roil-finance',
   },
   TEMPLATES: {
-    RewardTracker: '#canton-rebalancer:RewardTracker:RewardTracker',
-    RewardPayout: '#canton-rebalancer:RewardTracker:RewardPayout',
+    RewardTracker: '#roil-finance:RewardTracker:RewardTracker',
+    RewardPayout: '#roil-finance:RewardTracker:RewardPayout',
   },
 }));
 

@@ -19,8 +19,8 @@ const MAX_SNAPSHOTS = 720; // ~30 days at 1 per hour
 
 const STATE_PATH = process.env.PERFORMANCE_STATE_PATH
   || (process.platform === 'win32'
-    ? path.join(process.env.TEMP || 'C:\\Temp', 'canton-rebalancer-performance.json')
-    : '/tmp/canton-rebalancer-performance.json');
+    ? path.join(process.env.TEMP || 'C:\\Temp', 'roil-finance-performance.json')
+    : '/tmp/roil-finance-performance.json');
 
 async function savePerformanceState(): Promise<void> {
   try {

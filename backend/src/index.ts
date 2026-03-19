@@ -109,7 +109,7 @@ const server = app.listen(config.port, () => {
     });
   }
 
-  logger.info('Canton Private Rebalancer backend started', {
+  logger.info('Roil backend started', {
     port: config.port,
     jsonApiUrl: config.jsonApiUrl,
     platformParty: config.platformParty,

@@ -1,11 +1,59 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 // ---------------------------------------------------------------------------
-// Roil (Canton Private Rebalancer) — Pitch Deck Slides
+// Roil — Pitch Deck Slides
 // Self-contained React component with inline styles. No external CSS.
 // ---------------------------------------------------------------------------
 
 const TOTAL_SLIDES = 11;
+
+const TOKEN_LOGOS: Record<string, string> = {
+  CC: 'https://coin-images.coingecko.com/coins/images/70468/small/Canton-Ticker_%281%29.png?1762826299',
+  USDCx: 'https://coin-images.coingecko.com/coins/images/6319/small/usdc.png?1696515767',
+  CBTC: 'https://coin-images.coingecko.com/coins/images/1/small/bitcoin.png?1696501400',
+  ETHx: 'https://coin-images.coingecko.com/coins/images/279/small/ethereum.png?1696501628',
+  SOLx: 'https://coin-images.coingecko.com/coins/images/4128/small/solana.png?1718769756',
+  XAUt: 'https://coin-images.coingecko.com/coins/images/10481/small/Tether_Gold.png?1696510324',
+  XAGt: 'https://coin-images.coingecko.com/coins/images/29789/small/kag-currency-ticker.png?1696528719',
+  USTb: 'https://coin-images.coingecko.com/coins/images/31700/small/usdy_%281%29.png?1696530524',
+  MMF: '',
+};
+
+const TOKEN_FALLBACK_COLORS: Record<string, string> = {
+  CC: '#2563EB', USDCx: '#2775CA', CBTC: '#F7931A', ETHx: '#627EEA',
+  SOLx: '#9945FF', XAUt: '#D4A017', XAGt: '#A8A9AD', USTb: '#1E40AF', MMF: '#0EA5E9',
+};
+
+const TOKEN_LABELS: Record<string, string> = {
+  CC: 'CC', USDCx: '$', CBTC: '\u20BF', ETHx: '\u039E', SOLx: 'S',
+  XAUt: 'Au', XAGt: 'Ag', USTb: 'T', MMF: 'M',
+};
+
+function SlideTokenIcon({ symbol, size = 32 }: { symbol: string; size?: number }) {
+  const logo = TOKEN_LOGOS[symbol];
+  if (logo) {
+    return (
+      <img
+        src={logo}
+        alt={symbol}
+        width={size}
+        height={size}
+        style={{ borderRadius: '50%', objectFit: 'cover', border: '2px solid rgba(255,255,255,0.1)' }}
+      />
+    );
+  }
+  // Fallback: colored circle with letter
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: '50%',
+      backgroundColor: TOKEN_FALLBACK_COLORS[symbol] || '#6B7280',
+      color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: size * 0.4, fontWeight: 700,
+    }}>
+      {TOKEN_LABELS[symbol] || symbol[0]}
+    </div>
+  );
+}
 
 const C = {
   bg: '#0a0e17',
@@ -122,20 +170,6 @@ const badge: React.CSSProperties = {
   marginBottom: 20,
 };
 
-const tokenCircle = (color: string): React.CSSProperties => ({
-  width: 44,
-  height: 44,
-  borderRadius: '50%',
-  background: color,
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  fontSize: 13,
-  fontWeight: 800,
-  color: '#fff',
-  flexShrink: 0,
-});
-
 const flowArrow: React.CSSProperties = {
   fontSize: 24,
   color: C.accent,
@@ -190,7 +224,7 @@ function Slide2() {
   const features = [
     { title: 'Private Treasury', desc: 'Your treasury allocations, trade sizes, and strategies are invisible to everyone. Canton\'s sub-transaction privacy means even counterparties see only their part.', icon: '\u{1F512}' },
     { title: 'Smart Order Routing', desc: 'Cantex AMM + Temple Orderbook. Best price across Canton DEXes, every time.', icon: '\u{1F500}' },
-    { title: 'Auto-Compound', desc: '3 yield strategies: Simple Earn, LP Yield, and Staking Rewards. Compounded automatically.', icon: '\u{1F4C8}' },
+    { title: 'Auto-Compound', desc: '3 reinvestment strategies. Yield sources simulated on devnet, real protocol integration on mainnet.', icon: '\u{1F4C8}' },
     { title: 'DCA Engine', desc: 'Dollar-cost average hourly, daily, weekly, or monthly. Fully automated, fully private.', icon: '\u{23F0}' },
   ];
   return (
@@ -199,7 +233,7 @@ function Slide2() {
       <h1 style={titleStyle}>
         <span style={{ color: C.accent }}>Roil</span> &mdash; Private Treasury Management
       </h1>
-      <p style={subtitleStyle}>For Individuals AND Institutions &middot; Built on Canton Network</p>
+      <p style={subtitleStyle}>For Individuals Today &middot; Institutions Tomorrow &middot; Built on Canton Network</p>
       <p style={bodyText}>
         Roil is a privacy-first treasury management platform on Canton Network. Whether you're an individual
         managing your crypto portfolio or an institution handling tokenized assets &mdash; Roil automates allocation,
@@ -216,6 +250,30 @@ function Slide2() {
             </div>
           </div>
         ))}
+      </div>
+
+      <div style={cardGrid(3)}>
+        <div style={{ ...card, display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div style={{ fontSize: 32, lineHeight: 1 }}>{'\u{1F9EA}'}</div>
+          <div>
+            <p style={{ ...cardTitle, color: C.white, textTransform: 'none', letterSpacing: 0, fontSize: 17 }}>Rebalance Simulation</p>
+            <p style={cardDesc}>Dry-run before executing</p>
+          </div>
+        </div>
+        <div style={{ ...card, display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div style={{ fontSize: 32, lineHeight: 1 }}>{'\u{1F4CA}'}</div>
+          <div>
+            <p style={{ ...cardTitle, color: C.white, textTransform: 'none', letterSpacing: 0, fontSize: 17 }}>Performance Tracking</p>
+            <p style={cardDesc}>24h / 7d / 30d portfolio analytics</p>
+          </div>
+        </div>
+        <div style={{ ...card, display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+          <div style={{ fontSize: 32, lineHeight: 1 }}>{'\u{1F3C6}'}</div>
+          <div>
+            <p style={{ ...cardTitle, color: C.white, textTransform: 'none', letterSpacing: 0, fontSize: 17 }}>Reward Tiers</p>
+            <p style={cardDesc}>Bronze to Platinum, 0.5% to 3% CC fee rebates</p>
+          </div>
+        </div>
       </div>
 
       <div style={alertBox(C.positive, C.positiveLight)}>
@@ -235,8 +293,8 @@ function SlideWhoIsRoilFor() {
   const institutionalItems = [
     'Private treasury management for DAOs, funds, and corporates',
     'CIP-0056 compliant for regulated assets',
-    'Atomic settlement \u2014 no partial execution risk',
-    'KYC-compatible via Canton\u2019s privacy model',
+    'Canton-native settlement with Daml contract guarantees',
+    'Compliance-ready architecture via Canton\u2019s privacy model',
   ];
 
   return (
@@ -358,8 +416,8 @@ function Slide4() {
     { feature: 'Trade privacy', canton: 'Sub-tx privacy', evm: 'Fully exposed', cantonGood: true },
     { feature: 'Front-running', canton: 'Impossible', evm: '$1B+ MEV/year', cantonGood: true },
     { feature: 'Token standard', canton: 'CIP-0056 institutional', evm: 'ERC-20 basic', cantonGood: true },
-    { feature: 'Settlement', canton: 'Atomic multi-step', evm: 'Sequential', cantonGood: true },
-    { feature: 'Smart contracts', canton: 'Daml formal verification', evm: 'Solidity', cantonGood: true },
+    { feature: 'Settlement', canton: 'Deterministic settlement', evm: 'Sequential', cantonGood: true },
+    { feature: 'Smart contracts', canton: 'Daml (verifiable authorization)', evm: 'Solidity', cantonGood: true },
   ];
 
   const cellBase: React.CSSProperties = {
@@ -457,7 +515,7 @@ function Slide5() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {col.tokens.map((t) => (
                 <div key={t.symbol} style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-                  <div style={tokenCircle(t.color)}>{t.symbol.slice(0, 2)}</div>
+                  <SlideTokenIcon symbol={t.symbol} size={44} />
                   <div>
                     <p style={{ margin: 0, fontWeight: 700, fontSize: 16, color: C.white }}>{t.symbol}</p>
                     <p style={{ margin: '2px 0 0', fontSize: 13, color: C.muted }}>{t.name}</p>
@@ -485,16 +543,17 @@ function Slide5() {
           As tokenized gold (XAUt), silver (XAGt), US Treasury bonds (USTb), and money market funds go live on Canton,
           Roil becomes the <span style={{ color: C.warning, fontWeight: 700 }}>first platform</span> where users can
           build portfolios mixing crypto AND real-world assets &mdash; all with privacy.
+          <br /><span style={{ fontSize: 13, fontStyle: 'italic', color: C.muted }}>(RWA tokens: XAUt, XAGt, USTb, MMF &mdash; Available when tokenized on Canton mainnet)</span>
         </p>
         <div style={{ display: 'flex', gap: 24, marginTop: 12 }}>
           <div style={{ fontSize: 14, color: C.muted }}>
-            <span style={{ color: C.positive, fontWeight: 700 }}>$388B</span> tokenized on Canton today
+            <span style={{ color: C.positive, fontWeight: 700 }}>$410B+</span> tokenized on Canton today
           </div>
           <div style={{ fontSize: 14, color: C.muted }}>
             <span style={{ color: C.positive, fontWeight: 700 }}>$350B/day</span> US Treasury activity via DTCC
           </div>
           <div style={{ fontSize: 14, color: C.muted }}>
-            <span style={{ color: C.positive, fontWeight: 700 }}>$8T/month</span> repo transactions (Broadridge)
+            <span style={{ color: C.positive, fontWeight: 700 }}>$9T/month</span> repo transactions (Broadridge)
           </div>
         </div>
       </div>
@@ -604,14 +663,14 @@ function Slide6() {
 
 function Slide7() {
   const templates = [
-    { name: 'Conservative', alloc: '50% USDCx, 20% USTb, 15% XAUt, 15% CC', color: '#2775ca' },
-    { name: 'Balanced Growth', alloc: '30% CC, 25% CBTC, 20% ETHx, 15% USDCx, 10% XAUt', color: '#2563EB' },
-    { name: 'BTC-ETH Maxi', alloc: '45% CBTC, 35% ETHx, 20% CC', color: '#f7931a' },
-    { name: 'Crypto Basket', alloc: '25% CC, 25% CBTC, 25% ETHx, 25% SOLx', color: '#627eea' },
-    { name: 'Precious Metals', alloc: '45% XAUt, 30% XAGt, 25% USDCx', color: '#d4a017' },
-    { name: 'Institutional Grade', alloc: '35% USTb, 25% MMF, 20% XAUt, 20% USDCx', color: '#1a5276' },
-    { name: 'Stablecoin Yield', alloc: '60% USDCx, 25% USTb, 15% MMF', color: '#16a085' },
-    { name: 'All Weather', alloc: '20% CC, 15% CBTC, 15% ETHx, 15% USDCx, 15% XAUt, 10% USTb, 10% MMF', color: '#9945ff' },
+    { name: 'Conservative', alloc: '40% USDCx, 30% USTb, 20% XAUt, 10% CC', color: '#2775ca', tokens: ['USDCx', 'USTb', 'XAUt', 'CC'] },
+    { name: 'Balanced Growth', alloc: '25% CBTC, 20% ETHx, 25% USDCx, 15% XAUt, 15% CC', color: '#2563EB', tokens: ['CBTC', 'ETHx', 'USDCx', 'XAUt', 'CC'] },
+    { name: 'BTC-ETH Maxi', alloc: '50% CBTC, 30% ETHx, 20% USDCx', color: '#f7931a', tokens: ['CBTC', 'ETHx', 'USDCx'] },
+    { name: 'Crypto Basket', alloc: '30% CBTC, 25% ETHx, 15% SOLx, 15% CC, 15% USDCx', color: '#627eea', tokens: ['CBTC', 'ETHx', 'SOLx', 'CC', 'USDCx'] },
+    { name: 'Precious Metals', alloc: '60% XAUt, 40% XAGt', color: '#d4a017', tokens: ['XAUt', 'XAGt'] },
+    { name: 'Institutional Grade', alloc: '40% USTb, 25% XAUt, 20% USDCx, 15% CBTC', color: '#1a5276', tokens: ['USTb', 'XAUt', 'USDCx', 'CBTC'] },
+    { name: 'Stablecoin Yield', alloc: '70% USDCx, 30% CC', color: '#16a085', tokens: ['USDCx', 'CC'] },
+    { name: 'All Weather', alloc: '30% USTb, 20% XAUt, 20% CBTC, 15% USDCx, 15% ETHx', color: '#9945ff', tokens: ['USTb', 'XAUt', 'CBTC', 'USDCx', 'ETHx'] },
   ];
 
   return (
@@ -628,6 +687,11 @@ function Slide7() {
             borderTop: `3px solid ${t.color}`,
           }}>
             <p style={{ margin: '0 0 10px', fontWeight: 700, fontSize: 15, color: C.white }}>{t.name}</p>
+            <div style={{ display: 'flex', gap: 4, marginBottom: 10, flexWrap: 'wrap' as const }}>
+              {t.tokens.map((sym) => (
+                <SlideTokenIcon key={sym} symbol={sym} size={22} />
+              ))}
+            </div>
             <p style={{ margin: 0, fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{t.alloc}</p>
           </div>
         ))}
@@ -638,7 +702,7 @@ function Slide7() {
 
 function Slide8() {
   const stats = [
-    { label: 'Lines of Code', value: '20,000+' },
+    { label: 'Lines of Code', value: '37,000+' },
     { label: 'Automated Tests', value: '240+' },
     { label: 'Daml Modules', value: '6' },
     { label: 'Backend Test Files', value: '17' },
@@ -708,35 +772,51 @@ function Slide8() {
 function Slide9() {
   const phases = [
     {
-      label: 'Phase 1',
-      time: 'Now',
-      title: 'Devnet',
-      items: ['DAR deploy to Canton devnet', 'Cantex integration test', 'GSF registration'],
-      color: C.accent,
+      label: 'Built',
+      time: 'Today',
+      title: 'Ready Now',
+      items: [
+        '6 Daml contract modules + 240 tests',
+        'Smart Router: Cantex AMM + Temple Orderbook',
+        'DCA engine (hourly to monthly)',
+        'Auto-compound (3 strategies)',
+        'Reward tiers (Bronze \u2192 Platinum)',
+        '8 portfolio templates + custom wizard',
+        'Canton dApp SDK wallet integration',
+        'SSE real-time updates + performance tracking',
+      ],
+      color: C.positive,
       active: true,
     },
     {
-      label: 'Phase 2',
-      time: 'Q2 2026',
-      title: 'Testnet',
-      items: ['Stop-loss / take-profit', 'Multi-portfolio support', 'Real yield strategies'],
-      color: C.positive,
+      label: 'Next',
+      time: 'Devnet',
+      title: 'Live Testing',
+      items: [
+        'Deploy DAR to Canton devnet',
+        'Real Cantex + Temple swap testing',
+        'GSF Featured App registration',
+        'Loop Wallet live connection test',
+        'Real CC/USDCx token operations',
+        'Stop-loss / take-profit orders',
+        'Multi-portfolio support',
+      ],
+      color: C.accent,
       active: false,
     },
     {
-      label: 'Phase 3',
-      time: 'Q3 2026',
-      title: 'Mainnet',
-      items: ['Cross-chain via CCIP', 'Compliance module', 'Copy trading'],
+      label: 'Future',
+      time: 'Mainnet',
+      title: 'Production + Growth',
+      items: [
+        'RWA tokens: gold, silver, treasury bonds',
+        'Real yield integration (Alpend, ACME)',
+        'Cross-chain rebalance via Chainlink CCIP',
+        'AI portfolio optimization',
+        'Institutional dashboards + compliance',
+        'DAO governance for platform parameters',
+      ],
       color: C.warning,
-      active: false,
-    },
-    {
-      label: 'Phase 4',
-      time: 'Q4 2026+',
-      title: 'Growth',
-      items: ['AI portfolio optimization', 'Institutional dashboards', 'DAO governance'],
-      color: '#a855f7',
       active: false,
     },
   ];
@@ -745,7 +825,7 @@ function Slide9() {
     <div style={baseSlide}>
       <div style={badge}>ROADMAP</div>
       <h1 style={titleStyle}>Roadmap</h1>
-      <p style={subtitleStyle}>From Devnet to Institutional Scale</p>
+      <p style={subtitleStyle}>What We Built &middot; What's Next &middot; Where We're Going</p>
 
       {/* Timeline bar */}
       <div style={{ position: 'relative', marginTop: 48 }}>
@@ -758,7 +838,7 @@ function Slide9() {
           background: C.border,
           borderRadius: 2,
         }} />
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 20, position: 'relative' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 20, position: 'relative' }}>
           {phases.map((p) => (
             <div key={p.label}>
               {/* Dot on timeline */}
@@ -796,76 +876,86 @@ function Slide9() {
 }
 
 function Slide10() {
-  const actions = [
-    { title: 'Apply for Devnet Access', desc: 'Get early access to Canton devnet and start building', link: '#' },
-    { title: 'Cantex API Integration', desc: 'Connect to Cantex AMM for liquidity and swaps', link: '#' },
-    { title: 'GSF Featured App', desc: 'Register as a Global Synchronizer Featured Application', link: '#' },
+  const highlights = [
+    { value: '37,000+', label: 'Lines of Code' },
+    { value: '240+', label: 'Automated Tests' },
+    { value: '6', label: 'Daml Modules' },
+    { value: '9', label: 'Supported Assets' },
+    { value: '2', label: 'DEX Integrations' },
+    { value: '8', label: 'Portfolio Templates' },
   ];
 
   return (
     <div style={baseSlide}>
-      <div style={badge}>LET'S BUILD</div>
+      <div style={badge}>ROIL</div>
       <h1 style={titleStyle}>
-        Let's Build the Future of{' '}
-        <span style={{ color: C.accent }}>Private Treasury Management</span>
+        <span style={{ color: C.accent }}>Roil</span> &mdash; Private Treasury Management
       </h1>
       <p style={subtitleStyle}>Canton Network's First Portfolio Rebalancer</p>
-      <p style={{ fontSize: 16, color: C.muted, marginTop: 8, fontWeight: 600 }}>
-        First Canton app to combine portfolio rebalancing + DCA + auto-compound + RWA support
+      <p style={{ fontSize: 18, color: C.text, marginTop: 12, lineHeight: 1.7, maxWidth: 800, textAlign: 'center' as const, margin: '12px auto 0' }}>
+        Built and ready for devnet. 37,000+ lines of production code, 240+ tests,
+        smart order routing across Cantex and Temple, auto-compound, DCA engine,
+        reward tiers &mdash; all private on Canton Network.
       </p>
 
-      <div style={cardGrid(3)}>
-        {actions.map((a) => (
-          <div key={a.title} style={{
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(6, 1fr)', gap: 12, marginTop: 32 }}>
+        {highlights.map((h) => (
+          <div key={h.label} style={{
             ...card,
             textAlign: 'center' as const,
-            padding: '32px 24px',
-            cursor: 'pointer',
-            transition: 'border-color 0.2s',
+            padding: '20px 12px',
           }}>
-            <p style={{ margin: '0 0 8px', fontWeight: 700, fontSize: 17, color: C.white }}>{a.title}</p>
-            <p style={{ ...cardDesc, margin: 0 }}>{a.desc}</p>
+            <p style={{ margin: 0, fontSize: 28, fontWeight: 800, color: C.accent }}>{h.value}</p>
+            <p style={{ margin: '6px 0 0', fontSize: 13, color: C.muted, textTransform: 'uppercase', letterSpacing: 0.5 }}>{h.label}</p>
           </div>
         ))}
       </div>
 
       <div style={{
-        marginTop: 36,
+        marginTop: 32,
         display: 'flex',
         justifyContent: 'center',
-        gap: 24,
+        gap: 16,
         flexWrap: 'wrap' as const,
       }}>
-        {[
-          { label: 'GitHub', url: 'https://github.com' },
-          { label: 'Canton Network', url: 'https://canton.network' },
-          { label: 'Devnet Application', url: 'https://canton.network/devnet' },
-        ].map((link) => (
-          <a
-            key={link.label}
-            href={link.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            style={{
-              color: C.accent,
-              fontSize: 15,
-              fontWeight: 700,
-              textDecoration: 'none',
-              padding: '10px 24px',
-              border: `1px solid ${C.accent}`,
-              borderRadius: 8,
-              transition: 'background 0.2s',
-            }}
-          >
-            {link.label}
-          </a>
-        ))}
+        <a
+          href="https://github.com/Himess/roil-finance"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: C.white,
+            fontSize: 16,
+            fontWeight: 700,
+            textDecoration: 'none',
+            padding: '12px 28px',
+            background: C.accent,
+            borderRadius: 10,
+          }}
+        >
+          View on GitHub
+        </a>
+        <a
+          href="https://roil-finance.vercel.app"
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            color: C.accent,
+            fontSize: 16,
+            fontWeight: 700,
+            textDecoration: 'none',
+            padding: '12px 28px',
+            border: `1px solid ${C.accent}`,
+            borderRadius: 10,
+          }}
+        >
+          Live Demo
+        </a>
       </div>
 
       <div style={{
-        marginTop: 48,
+        marginTop: 36,
         textAlign: 'center' as const,
-        padding: '24px 32px',
+        padding: '20px 32px',
         background: C.accentLight,
         borderRadius: 16,
         border: `1px solid ${C.accent}`,

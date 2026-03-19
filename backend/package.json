@@ -1,8 +1,8 @@
 {
-  "name": "canton-rebalancer-backend",
+  "name": "roil-finance-backend",
   "version": "1.0.0",
   "type": "module",
-  "description": "Backend service for Canton Private Rebalancer — connects to Daml ledger and executes rebalancing swaps via Cantex DEX",
+  "description": "Backend service for Roil — connects to Daml ledger and executes rebalancing swaps via Cantex DEX",
   "main": "dist/index.js",
   "scripts": {
     "dev": "tsx watch src/index.ts",

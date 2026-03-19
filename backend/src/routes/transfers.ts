@@ -176,7 +176,7 @@ transfersRouter.get('/:party/export', requireParty('party'), async (req: Request
       .join('\n');
 
     res.setHeader('Content-Type', 'text/csv');
-    res.setHeader('Content-Disposition', `attachment; filename=canton-rebalancer-${party!.slice(0, 8)}-history.csv`);
+    res.setHeader('Content-Disposition', `attachment; filename=roil-finance-${party!.slice(0, 8)}-history.csv`);
     res.send(csv);
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });

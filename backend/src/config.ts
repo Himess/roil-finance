@@ -67,7 +67,7 @@ export const config = {
   ledgerUserId: process.env.LEDGER_USER_ID || 'app-provider',
 
   /** Ledger API application ID */
-  applicationId: process.env.APPLICATION_ID || 'canton-rebalancer',
+  applicationId: process.env.APPLICATION_ID || 'roil-finance',
 
   // --- Auth ---
 
@@ -75,7 +75,7 @@ export const config = {
   jwtMode: (process.env.JWT_MODE || 'unsafe') as 'unsafe' | 'rs256' | 'es256' | 'hmac256',
 
   /** HMAC-256 secret (dev/test only) */
-  jwtSecret: process.env.JWT_SECRET || 'canton-rebalancer-dev-secret',
+  jwtSecret: process.env.JWT_SECRET || 'roil-finance-dev-secret',
 
   /** RS256/ES256 private key path (production) */
   jwtPrivateKeyPath: process.env.JWT_PRIVATE_KEY_PATH || '',
@@ -112,7 +112,7 @@ export const config = {
 
   // --- Daml package reference ---
   /** Package name as uploaded to the ledger */
-  damlPackageName: process.env.DAML_PACKAGE_NAME || 'canton-rebalancer',
+  damlPackageName: process.env.DAML_PACKAGE_NAME || 'roil-finance',
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -122,7 +122,7 @@ export const config = {
 if (config.network !== 'localnet' && config.jwtMode === 'unsafe') {
   throw new Error('JWT_MODE=unsafe is not allowed in non-localnet environments');
 }
-if (config.network !== 'localnet' && config.jwtSecret === 'canton-rebalancer-dev-secret') {
+if (config.network !== 'localnet' && config.jwtSecret === 'roil-finance-dev-secret') {
   throw new Error('Default JWT_SECRET must be changed in non-localnet environments');
 }
 

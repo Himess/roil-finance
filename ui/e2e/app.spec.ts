@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Canton Rebalancer E2E', () => {
+test.describe('Roil E2E', () => {
   test('homepage loads and shows dashboard', async ({ page }) => {
     await page.goto('/');
 

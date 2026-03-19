@@ -47,7 +47,7 @@ describe('FeaturedAppEngine', () => {
   it('initializes with existing config', async () => {
     mockLedger.query.mockResolvedValueOnce([{
       contractId: 'existing-cid',
-      payload: { appName: 'Canton Rebalancer', isRegistered: false, totalActivities: 5 },
+      payload: { appName: 'Roil', isRegistered: false, totalActivities: 5 },
     }]);
 
     await engine.initialize();
@@ -59,7 +59,7 @@ describe('FeaturedAppEngine', () => {
     // First call to initialize (query returns existing config)
     mockLedger.query.mockResolvedValueOnce([{
       contractId: 'existing-cid',
-      payload: { appName: 'Canton Rebalancer', isRegistered: false, totalActivities: 5 },
+      payload: { appName: 'Roil', isRegistered: false, totalActivities: 5 },
     }]);
 
     mockLedger.exercise.mockResolvedValueOnce({
@@ -92,7 +92,7 @@ describe('FeaturedAppEngine', () => {
     mockLedger.query
       .mockResolvedValueOnce([{
         contractId: 'cfg-cid',
-        payload: { appName: 'Canton Rebalancer', isRegistered: true, totalActivities: 10, featuredAppRightCid: 'right-1' },
+        payload: { appName: 'Roil', isRegistered: true, totalActivities: 10, featuredAppRightCid: 'right-1' },
       }])
       .mockResolvedValueOnce([{
         payload: { user: 'user1', activityType: 'Rebalance', description: 'test', timestamp: '2026-03-17T00:00:00Z' },

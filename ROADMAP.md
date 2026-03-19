@@ -1,114 +1,114 @@
-# Canton Private Rebalancer — Roadmap
+# Roil — Roadmap
 
-## Current Status (v1.0 — Devnet Ready)
+## What We've Built (Today)
 
-### Core Features ✅
-- Portfolio management with 8 pre-built strategy templates
-- Auto-rebalance (drift threshold + price condition triggers)
-- Dollar-Cost Averaging (DCA) — Hourly/Daily/Weekly/Monthly
-- Auto-compound with 3 reinvestment strategies
-- Reward tier system (Bronze → Platinum) with CC fee rebates
-- Referral program with on-chain tracking
-- Featured App rewards (GSF integration ready)
-- Real-time event streaming (SSE from Canton Ledger)
-- Performance tracking with 24h/7d/30d analytics
+### Core Platform
+- 6 Daml smart contract modules (Portfolio, DCA, RewardTracker, FeaturedApp, TokenTransfer, Types)
+- 26 Daml test scripts with comprehensive coverage
+- TypeScript/Express backend with 17 test files, 200+ test cases
+- React 19 frontend with Plus Jakarta Sans, light theme design
+- 9 frontend unit + E2E tests
+
+### Smart Order Router
+- **Cantex AMM** integration (Ed25519 auth + secp256k1 swap signing)
+- **Temple Digital Group Orderbook** integration (CLOB with limit orders)
+- Automatic best-price selection across both DEXes
+- Pre-swap slippage protection with configurable tolerance
+- 0.1% platform fee (configurable)
+
+### Portfolio Management
+- 8 pre-built strategy templates (Conservative to All Weather)
+- 6-step Create Portfolio wizard with token picker
+- 9 supported assets: CC, USDCx, CBTC, ETHx, SOLx, XAUt, XAGt, USTb, MMF
+- Drift threshold + price condition auto-triggers
 - Rebalance simulation (dry-run before execution)
-- Platform fee (0.1% configurable)
+- Inline Review editing with real-time preview
 
-### Technical Foundation ✅
-- 6 Daml contract modules, 26 Daml tests
-- Canton Ledger API v2 (7 endpoints)
-- Cantex DEX native integration (Ed25519 + secp256k1)
-- CIP-0056 token standard (Holding + Transfer + Allocation)
-- ~240 automated tests (backend + frontend + E2E)
-- Docker + CI/CD + Grafana monitoring
+### DCA Engine
+- Hourly, Daily, Weekly, Monthly frequencies
+- Pause / Resume / Cancel controls
+- Execution history tracking
+
+### Auto-Compound
+- 3 reinvestment strategies (Portfolio Targets, Same Asset, USDC Only)
+- Yield detection from CC staking, Alpend lending, Cantex LP (simulated on devnet)
+- CompoundConfig Daml template for ledger persistence
+
+### Reward System
+- Tier-based CC fee rebates: Bronze (0.5%) -> Silver (1.0%) -> Gold (2.0%) -> Platinum (3.0%)
+- Monthly reward distribution
+- On-chain referral program with credit accrual
+- Privacy-preserving leaderboard
+
+### Canton Integration
+- Ledger API v2 (7 endpoints)
+- CIP-0056 Token Standard (Holding + Transfer + Allocation)
+- Canton dApp SDK (@canton-network/dapp-sdk) wallet integration
+- Transaction streaming (SSE from /v2/updates/flat)
+- Scan API client (network stats, featured apps)
+- Featured App rewards (GSF activity marker ready)
+- Cost estimation via Interactive Submission
+
+### Infrastructure
+- Docker multi-stage builds with non-root containers
+- CI/CD: 4 parallel jobs (Daml, Backend, Frontend, Docker) + npm audit
+- Prometheus + Grafana monitoring (8-panel dashboard)
 - Redis-compatible rate limiting
-- Transaction streaming + Scan API
+- JWT RS256/ES256 authentication
+- Circuit breaker + retry patterns
+- Graceful shutdown
+- Load testing script
+
+### Frontend
+- 6 pages: Dashboard, Create Portfolio, DCA, Rewards, Settings, Slides
+- 20+ components with real CoinGecko token logos
+- Custom TokenSelect dropdown
+- Performance chart with time range selector (1D/1W/1M/1Y/All)
+- Toast notifications, confirmation dialogs
+- Mobile responsive sidebar
+- Onboarding wizard
+- 11-slide pitch deck at /slides
 
 ---
 
-## Phase 1 — Devnet (Current Sprint)
-- [x] Submit devnet application to Canton GSF
-- [ ] Receive devnet onboarding credentials
-- [ ] Deploy validator node
-- [ ] Upload DAR to devnet participant
-- [ ] Configure real admin party IDs
-- [ ] Test with real Cantex DEX
-- [ ] Register as Featured App with GSF
-- [ ] Demo to Canton community
+## Devnet (Next)
 
-## Phase 2 — Testnet (Q2 2026)
-- [ ] Stop-Loss / Take-Profit orders
+- [ ] Deploy DAR to Canton devnet
+- [ ] Real Cantex + Temple swap execution testing
+- [ ] GSF Featured App registration
+- [ ] Loop Wallet live connection test
+- [ ] Real CC/USDCx token operations via tap faucet
+- [ ] Stop-loss / take-profit orders
 - [ ] Multi-portfolio support
-- [ ] Limit orders (single-asset trades)
-- [ ] Real yield integration (Alpend, Cantex LP)
-- [ ] Tax reporting (cost basis, CSV export)
-- [ ] Premium subscription tiers
-- [ ] Full CIP-0056 integration (DvP, Lock/Unlock)
-- [ ] Daml Trigger migration (cron → reactive)
-- [ ] Professional security audit
-- [ ] Cantex crypto code review
+- [ ] Real yield source integration (Alpend, ACME)
 
-## Phase 3 — Mainnet (Q3 2026)
-- [ ] **Auto Yield Optimizer** — Automatically find and route capital to highest-yield source (Alpend lending vs Cantex LP vs CC staking), rebalance yield positions dynamically
-- [ ] **Cross-Chain Rebalance** — Via Chainlink CCIP integration on Canton, include EVM-based assets (real ETH, USDC on Base/Ethereum) in portfolio rebalancing alongside Canton-native tokens
-- [ ] **Compliance Module** — KYC/AML-compliant rebalancing for institutional clients, leveraging Canton's privacy model to keep client data confidential while meeting regulatory requirements
-- [ ] Social strategies / copy trading
-- [ ] Institutional delegation (fund managers)
-- [ ] Backtesting engine
-- [ ] Public API / SDK for third-party integrations
-- [ ] Strategy marketplace with creator fees
-- [ ] Multi-synchronizer portfolio management
-- [ ] Atomic multi-step rebalancing
-- [ ] Privacy-preserving ZK proofs for performance claims
-- [ ] Mobile app (React Native)
+---
 
-## Phase 4 — Growth (Q4 2026+)
-- [ ] Cross-chain portfolio management (multi-chain beyond CCIP)
-- [ ] AI-powered strategy optimization
-- [ ] Institutional dashboards with compliance reporting
-- [ ] White-label platform for other Canton apps
+## Mainnet (Future)
+
+- [ ] RWA token support: tokenized gold, silver, treasury bonds
+- [ ] Cross-chain rebalance via Chainlink CCIP
+- [ ] Compliance module (KYC/AML for institutional clients)
+- [ ] AI portfolio optimization
+- [ ] Institutional dashboards
 - [ ] DAO governance for platform parameters
-- [ ] DTCC Tokenized Treasury direct integration
 
 ---
 
 ## Canton-Unique Advantages
 
-These features are only possible on Canton Network:
-
-1. **Private Portfolio Management** — Holdings, trades, and strategies are invisible to other parties
-2. **Atomic Multi-Step Rebalancing** — All swap legs execute or none do (no partial failures)
+1. **Private Portfolio Management** — Holdings, trades, and strategies invisible to other parties
+2. **Deterministic Settlement** — Canton's Daml contracts guarantee execution correctness
 3. **Privacy-Preserving Leaderboard** — Prove performance without revealing positions
-4. **Daml Smart Contracts** — Formally verifiable financial logic
-5. **Sub-Transaction Privacy** — Counterparties see only their relevant transaction parts
-6. **Featured App Rewards** — Earn CC tokens from GSF for generating network activity
+4. **Verifiable Authorization** — Daml's type system enforces multi-party consent
+5. **Sub-Transaction Privacy** — Counterparties see only their relevant parts
+6. **Featured App Rewards** — Earn CC tokens from GSF for network activity
 7. **CIP-0056 Compliance** — Standard token interface for institutional interoperability
-8. **Multi-Party Workflows** — Propose/accept patterns for regulated finance
 
 ---
 
-## Technical Debt
+## Links
 
-| Item | Priority | Status |
-|------|----------|--------|
-| Performance tracker → persistent storage | P1 | ✅ Done |
-| DCA lastExecutedAt cache | P1 | ✅ Done |
-| Consistent Zod validation | P1 | ✅ Done |
-| Cron circuit breaker | P1 | ✅ Done |
-| CompoundLog Daml template | P2 | Planned |
-| Dependency injection refactor | P3 | Planned |
-| Full CIP-0056 DvP integration | P2 | Planned |
-
----
-
-## Metrics & KPIs
-
-| Metric | Target (Devnet) | Target (Mainnet) |
-|--------|----------------|-----------------|
-| Total portfolios | 50+ | 1,000+ |
-| Monthly rebalances | 500+ | 10,000+ |
-| DCA schedules | 100+ | 2,000+ |
-| Featured App rewards | First coupon | Top 10 featured app |
-| Uptime | 95% | 99.9% |
-| Test coverage | ~240 tests | 500+ tests |
+- **Live Demo:** https://roil-finance.vercel.app
+- **Pitch Deck:** https://roil-finance.vercel.app/slides
+- **GitHub:** https://github.com/Himess/roil-finance

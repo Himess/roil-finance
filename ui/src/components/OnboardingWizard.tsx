@@ -61,7 +61,7 @@ export default function OnboardingWizard({ walletConnected, onConnectWallet, onC
       {step === 0 && (
         <div className="card p-8 text-center">
           <Wallet className="w-12 h-12 text-accent mx-auto mb-4" />
-          <h2 className="text-2xl font-bold text-ink mb-2">Welcome to Canton Rebalancer</h2>
+          <h2 className="text-2xl font-bold text-ink mb-2">Welcome to Roil</h2>
           <p className="text-base text-ink-secondary mb-6">
             Connect your Canton wallet to start managing your portfolio with automated rebalancing, DCA, and rewards.
           </p>

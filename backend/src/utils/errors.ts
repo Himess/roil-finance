@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Custom error types for the Canton Rebalancer backend
+// Custom error types for the Roil backend
 // ---------------------------------------------------------------------------
 
 /**

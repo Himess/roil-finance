@@ -1,10 +1,10 @@
-# Prometheus configuration for Canton Rebalancer
+# Prometheus configuration for Roil
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: 'canton-rebalancer-backend'
+  - job_name: 'roil-finance-backend'
     metrics_path: '/metrics'
     static_configs:
       - targets: ['rebalancer-backend:3001']
@@ -12,7 +12,7 @@ scrape_configs:
           service: 'rebalancer-backend'
           network: 'canton'
 
-  - job_name: 'canton-rebalancer-nginx'
+  - job_name: 'roil-finance-nginx'
     metrics_path: '/stub_status'
     static_configs:
       - targets: ['rebalancer-frontend:8080']

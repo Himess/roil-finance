@@ -46,14 +46,14 @@ function buildDevJwt(party: string): string {
   const header = { alg: 'none', typ: 'JWT' };
   const payload = {
     sub: party,
-    iss: 'canton-rebalancer-dev',
+    iss: 'roil-finance-dev',
     aud: 'canton-json-api',
     iat: Math.floor(Date.now() / 1000),
     exp: Math.floor(Date.now() / 1000) + 3600,
     scope: 'daml_ledger_api',
     actAs: [party],
     readAs: [party],
-    applicationId: 'canton-rebalancer-ui',
+    applicationId: 'roil-finance-ui',
   };
   const encode = (obj: unknown) =>
     btoa(JSON.stringify(obj))

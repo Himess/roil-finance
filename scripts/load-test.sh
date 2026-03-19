@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Canton Rebalancer Load Test
+# Roil Load Test
 # Requires: curl, bash
 # Usage: ./scripts/load-test.sh [base_url] [concurrent] [total]
 
@@ -9,7 +9,7 @@ BASE_URL="${1:-http://localhost:3001}"
 CONCURRENT="${2:-10}"
 TOTAL="${3:-100}"
 
-echo "=== Canton Rebalancer Load Test ==="
+echo "=== Roil Load Test ==="
 echo "Target:      $BASE_URL"
 echo "Concurrent:  $CONCURRENT"
 echo "Total:       $TOTAL requests"

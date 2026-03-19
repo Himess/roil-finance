@@ -81,9 +81,9 @@ vi.mock('../src/config.js', () => ({
     cantexApiUrl: 'http://localhost:6100',
   },
   TEMPLATES: {
-    Portfolio: '#canton-rebalancer:Portfolio:Portfolio',
-    FeaturedAppConfig: '#canton-rebalancer:FeaturedApp:FeaturedAppConfig',
-    ActivityRecord: '#canton-rebalancer:FeaturedApp:ActivityRecord',
+    Portfolio: '#roil-finance:Portfolio:Portfolio',
+    FeaturedAppConfig: '#roil-finance:FeaturedApp:FeaturedAppConfig',
+    ActivityRecord: '#roil-finance:FeaturedApp:ActivityRecord',
   },
 }));
 

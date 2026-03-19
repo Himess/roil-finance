@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # =============================================================================
-# Canton Rebalancer — Stop LocalNet
+# Roil — Stop LocalNet
 # =============================================================================
 # Stops the Canton LocalNet Docker Compose stack and optionally removes
 # volumes (for a clean restart).
@@ -16,7 +16,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CN_QUICKSTART_DIR="$PROJECT_DIR/.cn-quickstart"
 
-echo "=== Canton Rebalancer — Stopping LocalNet ==="
+echo "=== Roil — Stopping LocalNet ==="
 echo ""
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ const LEVEL_ORDER: Record<LogLevel, number> = {
 };
 
 class StructuredLogger {
-  private readonly service = 'canton-rebalancer';
+  private readonly service = 'roil-finance';
   private minLevel: LogLevel;
 
   constructor(minLevel: LogLevel = 'info') {

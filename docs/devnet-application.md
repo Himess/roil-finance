@@ -1,20 +1,21 @@
-# DevNet Application — Canton Rebalancer
+# DevNet Application — Roil
 
 ## Email Draft (to: operations@sync.global)
 
-**Subject:** DevNet Validator Sponsorship Request — Canton Rebalancer (Portfolio Management dApp)
+**Subject:** DevNet Validator Sponsorship Request — Roil (Portfolio Management dApp)
 
 ---
 
 Hi GSF Operations Team,
 
-We are building **Canton Rebalancer**, a privacy-preserving portfolio management platform on Canton Network. We would like to request DevNet access to test our application with real Canton infrastructure.
+We are building **Roil**, a privacy-preserving portfolio management platform on Canton Network. We would like to request DevNet access to test our application with real Canton infrastructure.
 
 ### About the Application
 
-**Canton Rebalancer** is a Glider-style portfolio rebalancer that leverages Canton's sub-transaction privacy to offer:
+**Roil** is a Glider-style portfolio rebalancer that leverages Canton's sub-transaction privacy to offer:
 
-- **Private Portfolio Rebalancing** — Users set target allocations (CC, USDCx, CBTC), system auto-rebalances when drift exceeds threshold
+- **Smart Order Router** — Automatically selects the best price across Cantex AMM and Temple Digital Group Orderbook (CLOB) for every swap
+- **Private Portfolio Rebalancing** — Users set target allocations across 9 supported assets (CC, USDCx, CBTC, ETHx, SOLx, XAUt, XAGt, USTb, MMF), system auto-rebalances when drift exceeds threshold
 - **Dollar Cost Averaging (DCA)** — Recurring purchases at configurable intervals (hourly/daily/weekly/monthly)
 - **Auto-Compounding** — Automatic yield reinvestment from staking/lending/LP positions
 - **Reward Tiers** — TX-based loyalty system (Bronze→Platinum) with fee rebates
@@ -23,14 +24,18 @@ We are building **Canton Rebalancer**, a privacy-preserving portfolio management
 
 - **Smart Contracts:** Daml 3.4.11 (6 Daml contract modules, 240+ tests across backend/Daml/frontend, 9 supported assets including RWA tokens (gold, silver, treasury bonds))
 - **Backend:** TypeScript/Express with Canton JSON Ledger API v2
-- **Frontend:** React + Vite + Tailwind CSS
-- **DEX Integration:** Cantex SDK for swap execution
+- **Frontend:** React 19 + Vite + Tailwind CSS
+- **DEX Integration:** Smart Order Router across Cantex AMM (Ed25519 auth + secp256k1 swap signing) and Temple Digital Group Orderbook (CLOB with limit orders)
 - **Token Standard:** CIP-0056 compliant token transfers
 - **Featured App:** Activity marker integration ready (splice-api-featured-app-v1)
 
+### Live Demo
+
+https://roil-finance.vercel.app
+
 ### GitHub Repository
 
-https://github.com/Himess/canton-rebalancer (public repository)
+https://github.com/Himess/roil-finance (public repository)
 
 ### Why Canton?
 
@@ -85,7 +90,7 @@ Thank you for considering our application.
 
 1. Receive sponsor URL from GSF
 2. Generate onboarding secret: `curl -X POST SPONSOR_URL/api/sv/v0/devnet/onboard/validator/prepare`
-3. Deploy validator: `./start.sh -s "SPONSOR_URL" -o "SECRET" -p "canton-rebalancer-1" -w`
+3. Deploy validator: `./start.sh -s "SPONSOR_URL" -o "SECRET" -p "roil-1" -w`
 4. Upload DAR to participant
 5. Configure Cantex SDK with DevNet keys
 6. Update .env with DevNet config

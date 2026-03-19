@@ -1,4 +1,4 @@
--- | CIP-0056 Token Standard integration for the Canton Private Rebalancer.
+-- | CIP-0056 Token Standard integration for Roil.
 -- Wraps token transfer and swap operations so the rebalancer can move
 -- real tokens (CC, USDCx, CBTC) on the Canton Network.
 module TokenTransfer where

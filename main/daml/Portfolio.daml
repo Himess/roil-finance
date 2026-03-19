@@ -1,4 +1,4 @@
--- | Portfolio management contract for the Canton Private Rebalancer
+-- | Portfolio management contract for Roil
 -- Each user has one Portfolio contract that tracks their target allocations,
 -- current holdings, and rebalance configuration.
 module Portfolio where

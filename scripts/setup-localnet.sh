@@ -2,14 +2,14 @@
 set -euo pipefail
 
 # =============================================================================
-# Canton Rebalancer — LocalNet Setup
+# Roil — LocalNet Setup
 # =============================================================================
 # Downloads cn-quickstart, starts Canton LocalNet via Docker Compose,
 # waits for services to become healthy, builds and uploads the DAR,
 # allocates parties, and prints connection information.
 # =============================================================================
 
-echo "=== Canton Rebalancer — LocalNet Setup ==="
+echo "=== Roil — LocalNet Setup ==="
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -52,7 +52,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 CN_QUICKSTART_DIR="$PROJECT_DIR/.cn-quickstart"
 MAIN_DIR="$PROJECT_DIR/main"
-DAR_PATH="$MAIN_DIR/.daml/dist/canton-rebalancer-0.1.0.dar"
+DAR_PATH="$MAIN_DIR/.daml/dist/roil-finance-0.1.0.dar"
 
 echo "Project root:  $PROJECT_DIR"
 echo "cn-quickstart: $CN_QUICKSTART_DIR"
@@ -165,7 +165,7 @@ upload_dar() {
   local header
   header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"roil-finance"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local token="${header}.${payload}."
 
   local status
@@ -200,7 +200,7 @@ allocate_party() {
   local header
   header=$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local payload
-  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"canton-rebalancer"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
+  payload=$(printf '{"sub":"admin","aud":"https://daml.com/jwt/aud/participant/sandbox","scope":"daml_ledger_api","actAs":[],"readAs":[],"applicationId":"roil-finance"}' | base64 | tr -d '\n' | tr '+/' '-_' | tr -d '=')
   local token="${header}.${payload}."
 
   local result
@@ -239,7 +239,7 @@ echo " JSON API (App User):      $APP_USER_URL"
 echo " Wallet UI:                http://localhost:2000"
 echo " Scan UI:                  http://localhost:4000"
 echo ""
-echo " DAR uploaded:  canton-rebalancer-0.1.0.dar"
+echo " DAR uploaded:  roil-finance-0.1.0.dar"
 echo " Parties:       Platform, Alice, Bob"
 echo ""
 echo " Next steps:"

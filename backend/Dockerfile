@@ -1,5 +1,5 @@
 # =============================================================================
-# Canton Rebalancer — Backend Dockerfile
+# Roil — Backend Dockerfile
 # =============================================================================
 # Multi-stage build: compile TypeScript, then run the slim production image.
 # =============================================================================

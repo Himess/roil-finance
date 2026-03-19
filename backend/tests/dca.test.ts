@@ -10,9 +10,9 @@ vi.mock('../src/config.js', () => ({
     network: 'localnet',
   },
   TEMPLATES: {
-    DCASchedule: '#canton-rebalancer:DCA:DCASchedule',
-    DCAExecution: '#canton-rebalancer:DCA:DCAExecution',
-    DCALog: '#canton-rebalancer:DCA:DCALog',
+    DCASchedule: '#roil-finance:DCA:DCASchedule',
+    DCAExecution: '#roil-finance:DCA:DCAExecution',
+    DCALog: '#roil-finance:DCA:DCALog',
   },
 }));
 

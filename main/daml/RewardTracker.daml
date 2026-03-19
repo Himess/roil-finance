@@ -1,4 +1,4 @@
--- | Reward tracking system for the Canton Private Rebalancer
+-- | Reward tracking system for Roil
 -- Tracks user activity (TX count) and assigns loyalty tiers.
 -- Higher tiers earn fee rebates, encouraging continued usage.
 module RewardTracker where

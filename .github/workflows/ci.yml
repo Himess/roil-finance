@@ -36,8 +36,8 @@ jobs:
       - name: Upload DAR
         uses: actions/upload-artifact@v4
         with:
-          name: canton-rebalancer-dar
-          path: main/.daml/dist/canton-rebalancer-0.1.0.dar
+          name: roil-finance-dar
+          path: main/.daml/dist/roil-finance-0.1.0.dar
 
   backend:
     name: Backend Build & Test
@@ -108,7 +108,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build backend Docker image
-        run: docker build -t canton-rebalancer-backend:ci ./backend
+        run: docker build -t roil-finance-backend:ci ./backend
 
       - name: Build frontend Docker image
-        run: docker build -t canton-rebalancer-frontend:ci ./ui
+        run: docker build -t roil-finance-frontend:ci ./ui
