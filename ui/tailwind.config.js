@@ -4,33 +4,40 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        sans: ['Plus Jakarta Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
+        sans: ['DM Sans', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'sans-serif'],
       },
       colors: {
+        primary: {
+          DEFAULT: '#059669',
+          light: '#10B981',
+        },
         surface: {
-          DEFAULT: '#F5F5F7',
+          DEFAULT: '#F3F4F9',
           card: '#FFFFFF',
           hover: '#EDEDF0',
-          border: '#DDDDE2',
+          border: '#D6D9E3',
           muted: '#E8E8EC',
         },
+        border: '#D6D9E3',
         ink: {
-          DEFAULT: '#1A1A1A',
-          secondary: '#6B6B6B',
-          muted: '#9B9B9B',
+          DEFAULT: '#111827',
+          secondary: '#6B7280',
+          muted: '#9CA3AF',
           faint: '#C4C4C4',
         },
         accent: {
-          DEFAULT: '#2563EB',
-          hover: '#1D4ED8',
-          light: '#EFF6FF',
+          DEFAULT: '#059669',
+          hover: '#047857',
+          light: '#E0F5EA',
+          cyan: '#06B6D4',
+          indigo: '#6366F1',
+          amber: '#D97706',
+          pink: '#EC4899',
+          red: '#E11D48',
         },
         positive: '#16A34A',
         negative: '#DC2626',
         warning: '#D97706',
-        cc: '#3B82F6',
-        usdcx: '#10B981',
-        cbtc: '#F59E0B',
       },
       animation: {
         'slide-in': 'slideIn 0.3s ease-out',

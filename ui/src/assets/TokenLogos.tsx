@@ -1,31 +1,21 @@
 import React from 'react';
 
 /**
- * Real token logo URLs from public CDNs.
- * These are the official logos used by CoinGecko, CoinMarketCap, etc.
+ * Local token logo paths from /public/tokens/.
  */
 const TOKEN_LOGO_URLS: Record<string, string> = {
-  // Canton Coin — official Canton Network logo from CoinGecko
-  CC: 'https://coin-images.coingecko.com/coins/images/70468/small/Canton-Ticker_%281%29.png?1762826299',
-  // USDC — Circle's official USDC logo
-  USDCx: 'https://coin-images.coingecko.com/coins/images/6319/small/usdc.png?1696515767',
-  // Bitcoin — official BTC logo
-  CBTC: 'https://coin-images.coingecko.com/coins/images/1/small/bitcoin.png?1696501400',
-  // Ethereum — official ETH logo
-  ETHx: 'https://coin-images.coingecko.com/coins/images/279/small/ethereum.png?1696501628',
-  // Solana — official SOL logo
-  SOLx: 'https://coin-images.coingecko.com/coins/images/4128/small/solana.png?1718769756',
-  // Gold — Tether Gold (XAUt) official logo
-  XAUt: 'https://coin-images.coingecko.com/coins/images/10481/small/Tether_Gold.png?1696510324',
-  // Silver — Kinesis Silver (KAG) as reference silver token logo
-  XAGt: 'https://coin-images.coingecko.com/coins/images/29789/small/kag-currency-ticker.png?1696528719',
-  // US Treasury — Ondo USDY (Treasury-backed) logo as reference
-  USTb: 'https://coin-images.coingecko.com/coins/images/31700/small/usdy_%281%29.png?1696530524',
-  // Money Market Fund — no standard logo available
-  MMF: '',
+  CC: '/tokens/cc.png',
+  USDCx: '/tokens/usdcx.png',
+  CBTC: '/tokens/cbtc.png',
+  ETHx: '/tokens/ethx.png',
+  SOLx: '/tokens/solx.png',
+  XAUt: '/tokens/xaut.png',
+  XAGt: '/tokens/xagt.png',
+  USTb: '/tokens/ustb.png',
+  MMF: '/tokens/usdcx.png',
 };
 
-// Fallback colors and labels for tokens without CDN logos
+// Fallback colors and labels for tokens without logos
 const FALLBACK_STYLES: Record<string, { bg: string; text: string; label: string }> = {
   CC: { bg: '#2563EB', text: '#fff', label: 'CC' },
   USDCx: { bg: '#2775CA', text: '#fff', label: '$' },

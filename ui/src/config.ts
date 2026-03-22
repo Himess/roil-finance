@@ -142,6 +142,19 @@ export const PORTFOLIO_TEMPLATES = [
   },
 ];
 
+/** Local token logo paths (from /public/tokens/) */
+export const TOKEN_LOGOS: Record<string, string> = {
+  CC: '/tokens/cc.png',
+  USDCx: '/tokens/usdcx.png',
+  CBTC: '/tokens/cbtc.png',
+  ETHx: '/tokens/ethx.png',
+  SOLx: '/tokens/solx.png',
+  XAUt: '/tokens/xaut.png',
+  XAGt: '/tokens/xagt.png',
+  USTb: '/tokens/ustb.png',
+  MMF: '/tokens/usdcx.png',
+};
+
 /** Fee rebate percentages matching Daml getFeeRebatePct */
 export const FEE_REBATE_PCT: Record<string, number> = {
   Bronze: 0.5,
