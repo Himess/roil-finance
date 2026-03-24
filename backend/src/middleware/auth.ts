@@ -23,6 +23,38 @@ declare global {
 const PUBLIC_PATHS = new Set(['/health', '/metrics', '/api/health']);
 
 // ---------------------------------------------------------------------------
+// Startup validation — call this at server boot to fail fast on misconfig
+// ---------------------------------------------------------------------------
+
+/**
+ * Validate JWT configuration at startup. Throws if RS256/ES256 mode is
+ * selected but JWT_PUBLIC_KEY is not set. Must be called before the server
+ * starts accepting requests.
+ */
+export function validateAuthConfig(): void {
+  if (
+    (config.jwtMode === 'rs256' || config.jwtMode === 'es256') &&
+    !process.env.JWT_PUBLIC_KEY
+  ) {
+    throw new Error(
+      `JWT_MODE is '${config.jwtMode}' but JWT_PUBLIC_KEY is not set. ` +
+      `Cannot verify tokens without a public key. Set JWT_PUBLIC_KEY or change JWT_MODE.`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Auth configuration error — thrown when public key is missing at runtime
+// ---------------------------------------------------------------------------
+
+class AuthConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AuthConfigError';
+  }
+}
+
+// ---------------------------------------------------------------------------
 // JWT verification helpers
 // ---------------------------------------------------------------------------
 
@@ -75,8 +107,9 @@ function verifyJwt(token: string): Record<string, unknown> | null {
       // Verify RS256 signature using public key
       const rs256PublicKey = process.env.JWT_PUBLIC_KEY;
       if (!rs256PublicKey) {
-        logger.warn('No JWT_PUBLIC_KEY configured for RS256 verification');
-        return null;
+        // This should have been caught at startup by validateAuthConfig().
+        // If we reach here, reject with a clear server error rather than silently returning null.
+        throw new AuthConfigError('JWT_PUBLIC_KEY is not configured for RS256 verification');
       }
       const rs256Verifier = crypto.createVerify('RSA-SHA256');
       rs256Verifier.update(signingInput);
@@ -89,8 +122,9 @@ function verifyJwt(token: string): Record<string, unknown> | null {
       // Verify ES256 signature using public key
       const es256PublicKey = process.env.JWT_PUBLIC_KEY;
       if (!es256PublicKey) {
-        logger.warn('No JWT_PUBLIC_KEY configured for ES256 verification');
-        return null;
+        // This should have been caught at startup by validateAuthConfig().
+        // If we reach here, reject with a clear server error rather than silently returning null.
+        throw new AuthConfigError('JWT_PUBLIC_KEY is not configured for ES256 verification');
       }
       const es256Verifier = crypto.createVerify('SHA256');
       es256Verifier.update(signingInput);
@@ -125,7 +159,19 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
 
   if (token) {
-    const payload = verifyJwt(token);
+    let payload: Record<string, unknown> | null;
+    try {
+      payload = verifyJwt(token);
+    } catch (err) {
+      if (err instanceof AuthConfigError) {
+        // Server misconfiguration — return 500, not 401
+        logger.error(`Auth configuration error: ${err.message}`);
+        res.status(500).json({ success: false, error: 'Server authentication configuration error' });
+        return;
+      }
+      throw err;
+    }
+
     if (payload) {
       // Extract actAs parties from JWT
       const actAs = Array.isArray(payload.actAs) ? payload.actAs as string[] : [];

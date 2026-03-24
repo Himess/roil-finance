@@ -24,7 +24,7 @@ const TargetAllocationSchema = z.object({
 
 const CreatePortfolioSchema = z.object({
   user: z.string().min(1),
-  targets: z.array(TargetAllocationSchema).min(2),
+  targets: z.array(TargetAllocationSchema).min(2).max(20),
   triggerMode: z.union([
     z.literal('Manual'),
     z.object({

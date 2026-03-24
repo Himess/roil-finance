@@ -92,6 +92,9 @@ export const config = {
   /** JWT audience */
   jwtAudience: process.env.JWT_AUDIENCE || 'https://daml.com/jwt/aud/participant/sandbox',
 
+  /** Allowed CORS origins (comma-separated). Used in non-localnet environments. */
+  allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(','),
+
   // --- Cantex ---
 
   /** Cantex operator key (Ed25519 hex) */

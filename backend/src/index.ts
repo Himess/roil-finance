@@ -5,6 +5,7 @@ import './tracing.js';
 import cron from 'node-cron';
 import { config, resolveTemplateIds } from './config.js';
 import { createApp } from './server.js';
+import { validateAuthConfig } from './middleware/auth.js';
 import { rebalanceEngine } from './engine/rebalance.js';
 import { dcaEngine } from './engine/dca.js';
 import { rewardsEngine } from './engine/rewards.js';
@@ -37,6 +38,12 @@ await resolveTemplateIds().then(hash => {
 }).catch(err => {
   logger.warn('Template ID resolution skipped', { error: String(err) });
 });
+
+// ---------------------------------------------------------------------------
+// Startup validation — fail fast on misconfiguration
+// ---------------------------------------------------------------------------
+
+validateAuthConfig();
 
 // ---------------------------------------------------------------------------
 // Entry point

@@ -76,18 +76,21 @@ template RewardTracker
           paidAt = distributedAt
 
         -- Roll over to new month tracker
+        -- finalTier = tier earned purely from this month's TX count
+        let finalTier = getTier txCount
+        -- If user maintained or improved their tier, increment consecutive; otherwise reset to 1
         let newConsecutive =
-              if getTier txCount >= tier
+              if finalTier >= tier
               then consecutiveMonths + 1
-              else 1  -- reset if tier dropped
+              else 1
 
         trackerCid <- create RewardTracker with
           platform
           user
           monthId = newMonthId
           txCount = 0
-          tier = getTier txCount  -- carry tier from last month's final count
-          previousTier = Some (getTier txCount)
+          tier = tier  -- carry the current month's effective tier (includes carry-over)
+          previousTier = Some tier
           consecutiveMonths = newConsecutive
           totalRewardsEarned = totalRewardsEarned + rewardAmount
 

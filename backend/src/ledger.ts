@@ -145,6 +145,7 @@ export class DamlLedger {
               Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify(body),
+            signal: AbortSignal.timeout(30_000),
           });
 
           if (!res.ok) {
@@ -174,6 +175,7 @@ export class DamlLedger {
           const token = buildJwt(actAs, actAs);
           const res = await fetch(`${this.baseUrl}${path}`, {
             headers: { Authorization: `Bearer ${token}` },
+            signal: AbortSignal.timeout(30_000),
           });
 
           if (!res.ok) {
@@ -202,7 +204,9 @@ export class DamlLedger {
 
   async health(): Promise<boolean> {
     try {
-      const res = await fetch(`${this.baseUrl}/livez`);
+      const res = await fetch(`${this.baseUrl}/livez`, {
+        signal: AbortSignal.timeout(30_000),
+      });
       return res.ok;
     } catch {
       return false;
@@ -215,6 +219,12 @@ export class DamlLedger {
 
   /**
    * Create a contract and wait for the transaction result.
+   *
+   * Idempotency: The commandId is used by Canton to deduplicate commands.
+   * If a command times out and is retried internally (via withRetry), the
+   * same commandId is reused because it is generated BEFORE entering the
+   * retry loop. For application-level retries (caller retrying create()),
+   * pass an explicit commandId to ensure at-most-once semantics.
    */
   async create(
     templateId: string,
@@ -222,6 +232,8 @@ export class DamlLedger {
     actAs: string[],
     commandId?: string,
   ): Promise<SubmitResult> {
+    // Generate commandId OUTSIDE the retry loop so retries reuse the same ID.
+    // Canton deduplicates commands with the same commandId, preventing duplicates.
     const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
     return this.post<SubmitResult>(
       '/v2/commands/submit-and-wait',
@@ -239,6 +251,12 @@ export class DamlLedger {
 
   /**
    * Exercise a choice on an existing contract.
+   *
+   * Idempotency: The commandId is used by Canton to deduplicate commands.
+   * If a command times out and is retried internally (via withRetry), the
+   * same commandId is reused because it is generated BEFORE entering the
+   * retry loop. For application-level retries (caller retrying exercise()),
+   * pass an explicit commandId to ensure at-most-once semantics.
    */
   async exercise(
     templateId: string,
@@ -248,6 +266,8 @@ export class DamlLedger {
     actAs: string[],
     commandId?: string,
   ): Promise<SubmitResult> {
+    // Generate commandId OUTSIDE the retry loop so retries reuse the same ID.
+    // Canton deduplicates commands with the same commandId, preventing duplicates.
     const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
     return this.post<SubmitResult>(
       '/v2/commands/submit-and-wait',
@@ -343,6 +363,7 @@ export class DamlLedger {
               Authorization: `Bearer ${token}`,
             },
             body: darContent,
+            signal: AbortSignal.timeout(30_000),
           });
 
           if (!res.ok) {

@@ -131,6 +131,21 @@ function scheduleKey(user: string, source: string, target: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory execution lock
+// ---------------------------------------------------------------------------
+
+/**
+ * Tracks schedule IDs that are currently being executed, preventing the same
+ * schedule from being processed concurrently by overlapping cron ticks or
+ * trigger events within the same process.
+ *
+ * NOTE: This only protects against same-process duplicates. For multi-instance
+ * deployment (horizontal scaling), use a distributed lock (e.g. Redis SETNX
+ * with TTL) keyed by schedule contract ID.
+ */
+const executingSchedules = new Set<string>();
+
+// ---------------------------------------------------------------------------
 // DCAEngine
 // ---------------------------------------------------------------------------
 
@@ -189,6 +204,12 @@ export class DCAEngine {
       for (const schedule of activeSchedules) {
         const { payload } = schedule;
 
+        // Skip if this schedule is already being executed (concurrent protection)
+        if (executingSchedules.has(schedule.contractId)) {
+          logger.info(`Skipping schedule ${schedule.contractId} — already executing`, { component: 'dca' });
+          continue;
+        }
+
         // Use cache to determine last execution time
         const key = scheduleKey(payload.user, payload.sourceAsset.symbol, payload.targetAsset.symbol);
         const cachedTs = lastExecutionCache.get(key);
@@ -203,6 +224,7 @@ export class DCAEngine {
           { component: 'dca' },
         );
 
+        executingSchedules.add(schedule.contractId);
         try {
           // 0. Fee budget check — ensure platform has enough CC for this DCA execution
           // Estimate: 1 swap + 2 ledger commands (ExecuteDCA + CompleteDCAExecution)
@@ -288,6 +310,8 @@ export class DCAEngine {
           const message = err instanceof Error ? err.message : String(err);
           logger.error(`Failed for user=${payload.user}: ${message}`, { component: 'dca' });
           failed++;
+        } finally {
+          executingSchedules.delete(schedule.contractId);
         }
       }
     } catch (err) {
@@ -458,6 +482,14 @@ export async function handleDCAScheduleEvent(
     return { executed: false };
   }
 
+  // Concurrent execution guard (same-process only)
+  if (executingSchedules.has(schedule.contractId)) {
+    logger.info(`[dca] Skipping event-driven schedule ${schedule.contractId} — already executing`, { component: 'dca-trigger' });
+    return { executed: false };
+  }
+
+  executingSchedules.add(schedule.contractId);
+
   logger.info(
     `[dca] Event-driven execution: ${payload.sourceAsset.symbol} -> ${payload.targetAsset.symbol}, user=${payload.user}`,
     { component: 'dca-trigger' },
@@ -526,6 +558,8 @@ export async function handleDCAScheduleEvent(
       user: payload.user,
     });
     return { executed: false, error: message };
+  } finally {
+    executingSchedules.delete(schedule.contractId);
   }
 }
 

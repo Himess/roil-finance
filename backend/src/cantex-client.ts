@@ -12,11 +12,62 @@
  */
 
 import * as crypto from 'node:crypto';
+import { z } from 'zod';
 import { config } from './config.js';
 import { withRetry } from './utils/retry.js';
 import { cantexBreaker } from './utils/circuit-breaker.js';
 import { CantexError } from './utils/errors.js';
 import { logger } from './monitoring/logger.js';
+
+// ---------------------------------------------------------------------------
+// Zod schemas for critical Cantex API response validation
+// ---------------------------------------------------------------------------
+
+const BalanceEntrySchema = z.object({
+  instrument_id: z.string().optional(),
+  instrumentId: z.string().optional(),
+  unlocked_amount: z.union([z.string(), z.number()]).optional(),
+  amount: z.union([z.string(), z.number()]).optional(),
+  locked_amount: z.union([z.string(), z.number()]).optional(),
+  locked: z.union([z.string(), z.number()]).optional(),
+  instrument_admin: z.string().optional(),
+  instrumentAdmin: z.string().optional(),
+});
+
+const AccountInfoResponseSchema = z.object({
+  balances: z.array(BalanceEntrySchema),
+  pending_transfers: z.number().optional(),
+  expired_allocations: z.number().optional(),
+});
+
+const SwapQuoteResponseSchema = z.object({
+  trade_price: z.union([z.string(), z.number()]).optional(),
+  tradePrice: z.union([z.string(), z.number()]).optional(),
+  slippage: z.union([z.string(), z.number()]).optional(),
+  estimated_time_seconds: z.number().optional(),
+  pool_price_before_trade: z.union([z.string(), z.number()]).optional(),
+  pool_price_after_trade: z.union([z.string(), z.number()]).optional(),
+  returned: z.object({
+    amount: z.union([z.string(), z.number()]),
+    instrument_id: z.string().optional(),
+    instrument_admin: z.string().optional(),
+  }).optional(),
+  fees: z.object({
+    fee_percentage: z.union([z.string(), z.number()]).optional(),
+    amount_admin: z.union([z.string(), z.number()]).optional(),
+    amount_liquidity: z.union([z.string(), z.number()]).optional(),
+    network_fee: z.union([z.string(), z.number()]).optional(),
+  }).optional(),
+});
+
+const SwapBuildResponseSchema = z.object({
+  id: z.string(),
+  digest: z.string(),
+});
+
+const SwapSubmitResponseSchema = z.object({
+  status: z.string().optional(),
+});
 
 /** How many seconds before token expiry to trigger a proactive refresh */
 const TOKEN_REFRESH_BUFFER_MS = 60_000; // 60 seconds
@@ -312,16 +363,23 @@ export class CantexRealClient {
   // -----------------------------------------------------------------------
 
   async getAccountInfo(): Promise<AccountInfo> {
-    const raw = await this.authGet<any>('/v1/account/info');
+    const raw = await this.authGet<unknown>('/v1/account/info');
+    const parsed = AccountInfoResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new CantexError(
+        `Invalid getAccountInfo response: ${parsed.error.message}. Raw: ${JSON.stringify(raw).slice(0, 200)}`,
+      );
+    }
+    const data = parsed.data;
     return {
-      balances: (raw.balances || []).map((b: any) => ({
-        instrumentId: b.instrument_id || b.instrumentId,
-        instrumentAdmin: b.instrument_admin || b.instrumentAdmin,
+      balances: data.balances.map((b) => ({
+        instrumentId: b.instrument_id || b.instrumentId || '',
+        instrumentAdmin: b.instrument_admin || b.instrumentAdmin || '',
         amount: Number(b.unlocked_amount || b.amount || 0),
         locked: Number(b.locked_amount || b.locked || 0),
       })),
-      pendingTransfers: raw.pending_transfers || 0,
-      expiredAllocations: raw.expired_allocations || 0,
+      pendingTransfers: data.pending_transfers || 0,
+      expiredAllocations: data.expired_allocations || 0,
     };
   }
 
@@ -361,7 +419,7 @@ export class CantexRealClient {
     buyInstrumentId: string,
     buyInstrumentAdmin: string,
   ): Promise<SwapQuote> {
-    const raw = await this.authPost<any>('/v2/pools/quote', {
+    const raw = await this.authPost<unknown>('/v2/pools/quote', {
       sellAmount: String(sellAmount),
       sellInstrumentId,
       sellInstrumentAdmin,
@@ -369,22 +427,30 @@ export class CantexRealClient {
       buyInstrumentAdmin,
     });
 
+    const parsed = SwapQuoteResponseSchema.safeParse(raw);
+    if (!parsed.success) {
+      throw new CantexError(
+        `Invalid getSwapQuote response: ${parsed.error.message}. Raw: ${JSON.stringify(raw).slice(0, 200)}`,
+      );
+    }
+    const data = parsed.data;
+
     return {
-      tradePrice: Number(raw.trade_price || raw.tradePrice || 0),
-      slippage: Number(raw.slippage || 0),
-      estimatedTimeSeconds: Number(raw.estimated_time_seconds || 30),
-      poolPriceBefore: Number(raw.pool_price_before_trade || 0),
-      poolPriceAfter: Number(raw.pool_price_after_trade || 0),
-      returnedAmount: Number(raw.returned?.amount || 0),
+      tradePrice: Number(data.trade_price || data.tradePrice || 0),
+      slippage: Number(data.slippage || 0),
+      estimatedTimeSeconds: Number(data.estimated_time_seconds || 30),
+      poolPriceBefore: Number(data.pool_price_before_trade || 0),
+      poolPriceAfter: Number(data.pool_price_after_trade || 0),
+      returnedAmount: Number(data.returned?.amount || 0),
       returnedInstrument: {
-        id: raw.returned?.instrument_id || '',
-        admin: raw.returned?.instrument_admin || '',
+        id: data.returned?.instrument_id || '',
+        admin: data.returned?.instrument_admin || '',
       },
       fees: {
-        feePercentage: Number(raw.fees?.fee_percentage || 0),
-        amountAdmin: Number(raw.fees?.amount_admin || 0),
-        amountLiquidity: Number(raw.fees?.amount_liquidity || 0),
-        networkFee: Number(raw.fees?.network_fee || 0),
+        feePercentage: Number(data.fees?.fee_percentage || 0),
+        amountAdmin: Number(data.fees?.amount_admin || 0),
+        amountLiquidity: Number(data.fees?.amount_liquidity || 0),
+        networkFee: Number(data.fees?.network_fee || 0),
       },
     };
   }
@@ -417,7 +483,7 @@ export class CantexRealClient {
 
     // Step 1: Build swap intent — the server creates the intent structure
     // with (from, to, amount, nonce) and returns a digest to sign
-    const buildResult = await this.authPost<any>('/v1/intent/build/pool/swap', {
+    const buildRaw = await this.authPost<unknown>('/v1/intent/build/pool/swap', {
       sellAmount: String(sellAmount),
       sellInstrumentId,
       sellInstrumentAdmin,
@@ -425,14 +491,15 @@ export class CantexRealClient {
       buyInstrumentAdmin,
     });
 
-    const buildId = buildResult.id;
-    const digest = buildResult.digest;
-
-    if (!buildId || !digest) {
+    const buildParsed = SwapBuildResponseSchema.safeParse(buildRaw);
+    if (!buildParsed.success) {
       throw new CantexError(
-        `Swap build failed: no id or digest returned. Response: ${JSON.stringify(buildResult)}`,
+        `Swap build failed: invalid response structure. ${buildParsed.error.message}. Raw: ${JSON.stringify(buildRaw).slice(0, 200)}`,
       );
     }
+
+    const buildId = buildParsed.data.id;
+    const digest = buildParsed.data.digest;
 
     // Step 2: Sign the intent digest with secp256k1 trading key
     // The digest encodes (from, to, amount, nonce) — signing it authorizes
@@ -445,10 +512,18 @@ export class CantexRealClient {
     }
 
     // Step 3: Submit signed intent for on-chain settlement
-    const submitResult = await this.authPost<any>('/v1/intent/submit', {
+    const submitRaw = await this.authPost<unknown>('/v1/intent/submit', {
       id: buildId,
       intentTradingKeySignature: intentSignature,
     });
+
+    const submitParsed = SwapSubmitResponseSchema.safeParse(submitRaw);
+    if (!submitParsed.success) {
+      throw new CantexError(
+        `Swap submit response invalid: ${submitParsed.error.message}. Raw: ${JSON.stringify(submitRaw).slice(0, 200)}`,
+      );
+    }
+    const submitResult = submitParsed.data;
 
     // Get quote for output amount estimation (swap is async, so we estimate)
     const quote = await this.getSwapQuote(

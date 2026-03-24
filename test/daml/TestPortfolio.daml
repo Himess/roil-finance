@@ -105,6 +105,10 @@ testPortfolioLifecycle = script do
   logs <- query @RebalanceLog alice
   assertMsg "Should have 1 rebalance log" (length logs == 1)
 
+  -- Verify RebalanceRequest is archived (consumed by CompleteRebalance)
+  requests <- query @RebalanceRequest alice
+  assertMsg "RebalanceRequest should be archived after completion" (length requests == 0)
+
   pure ()
 
 -- | Test: Target validation
@@ -246,6 +250,10 @@ testDCALifecycle = script do
   logs <- query @DCALog alice
   assertMsg "Should have 2 DCA logs" (length logs == 2)
 
+  -- Verify DCAExecution contracts are archived (consumed by CompleteDCAExecution)
+  executions <- query @DCAExecution alice
+  assertMsg "DCAExecution should be archived after completion" (length executions == 0)
+
   -- Pause DCA
   scheduleCid <- submit alice do
     exerciseCmd scheduleCid PauseDCA
@@ -295,6 +303,16 @@ testRewardTracking = script do
   -- Verify payout
   payouts <- query @RewardPayout alice
   assertMsg "Should have 1 payout" (length payouts == 1)
+
+  -- Verify new month tracker carries Silver tier (not Bronze)
+  trackers <- query @RewardTracker alice
+  assertMsg "Should have 1 tracker for new month" (length trackers == 1)
+  let (_, newTracker) = head trackers
+  assertMsg "New month tracker should carry Silver tier" (newTracker.tier == Silver)
+  assertMsg "New month txCount should be 0" (newTracker.txCount == 0)
+  assertMsg "Previous tier should be Silver" (newTracker.previousTier == Some Silver)
+  assertMsg "Consecutive months should be 1" (newTracker.consecutiveMonths == 1)
+  assertMsg "Total rewards should be 10.0" (newTracker.totalRewardsEarned == 10.0)
 
   pure ()
 

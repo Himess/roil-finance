@@ -238,11 +238,15 @@ export class PriceOracle {
 
     logger.info(`[price-oracle] Starting price polling (interval=${intervalMs}ms)`);
 
-    // Initial fetch
-    void this.pollOnce();
+    // Initial fetch — catch unhandled rejections to prevent process crash
+    this.pollOnce().catch((err) => {
+      logger.error(`[price-oracle] Initial polling failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
 
     this.pollingInterval = setInterval(() => {
-      void this.pollOnce();
+      this.pollOnce().catch((err) => {
+        logger.error(`[price-oracle] Polling cycle failed: ${err instanceof Error ? err.message : String(err)}`);
+      });
     }, intervalMs);
   }
 

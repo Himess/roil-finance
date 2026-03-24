@@ -18,7 +18,7 @@ const CreateDCASchema = z.object({
   user: z.string().min(1),
   sourceAsset: AssetIdSchema,
   targetAsset: AssetIdSchema,
-  amountPerBuy: z.number().positive(),
+  amountPerBuy: z.number().positive().finite(),
   frequency: z.enum(['Hourly', 'Daily', 'Weekly', 'Monthly']),
 });
 

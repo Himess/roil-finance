@@ -57,7 +57,7 @@ export function createApp(): express.Express {
   app.use(cors({
     origin: config.network === 'localnet'
       ? true
-      : (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(','),
+      : config.allowedOrigins,
     credentials: true,
   }));
   app.use(express.json());
