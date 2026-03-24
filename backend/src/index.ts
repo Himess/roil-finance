@@ -1,5 +1,9 @@
+// OpenTelemetry must be imported before any other modules for
+// auto-instrumentation to hook into Express and HTTP correctly.
+import './tracing.js';
+
 import cron from 'node-cron';
-import { config } from './config.js';
+import { config, resolveTemplateIds } from './config.js';
 import { createApp } from './server.js';
 import { rebalanceEngine } from './engine/rebalance.js';
 import { dcaEngine } from './engine/dca.js';
@@ -9,9 +13,30 @@ import { priceOracle } from './services/price-oracle.js';
 import { logger } from './monitoring/logger.js';
 import { metrics, METRICS } from './monitoring/metrics.js';
 import { transactionStream } from './services/transaction-stream.js';
+import { initDb, closeDb } from './db/index.js';
 // Performance tracker is loaded eagerly so the in-memory store is ready
 // for snapshot recording during auto-rebalance checks.
 import './services/performance-tracker.js';
+
+// ---------------------------------------------------------------------------
+// Bootstrap — database + template ID resolution
+// ---------------------------------------------------------------------------
+
+// Initialize Postgres connection pool and run schema migration.
+// No-op if DATABASE_URL is not set (in-memory fallback used instead).
+await initDb().catch(err => {
+  logger.warn('Database init skipped', { error: String(err) });
+});
+
+// Resolve Daml package hash for devnet/testnet/mainnet template IDs.
+// On localnet, package-name references work natively — no resolution needed.
+await resolveTemplateIds().then(hash => {
+  if (hash) {
+    logger.info(`Resolved Daml package hash: ${hash}`, { component: 'config' });
+  }
+}).catch(err => {
+  logger.warn('Template ID resolution skipped', { error: String(err) });
+});
 
 // ---------------------------------------------------------------------------
 // Entry point
@@ -138,10 +163,12 @@ function gracefulShutdown(signal: string): void {
     task.stop();
   }
 
-  // Close HTTP server
+  // Close HTTP server, then database pool
   server.close(() => {
     logger.info('HTTP server closed');
-    process.exit(0);
+    void closeDb().finally(() => {
+      process.exit(0);
+    });
   });
 }
 

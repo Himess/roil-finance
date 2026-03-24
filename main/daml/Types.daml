@@ -1,12 +1,21 @@
--- | Core types for Roil
+-- | Core types for Roil Finance — Canton Network aligned.
+-- All timestamps use DA.Time.Time (not Text) for proper ledger-time integration.
 module Types where
 
--- | Supported asset identifiers on Canton Network
+import DA.Time
+
+-- | Supported asset identifiers on Canton Network.
+-- Mirrors the Splice instrument model (issuer + symbol).
 data AssetId = AssetId
   with
     symbol : Text       -- e.g., "CC", "USDCx", "CBTC"
     admin  : Party      -- token issuer/admin party
   deriving (Eq, Show, Ord)
+
+-- | Construct an AssetId key string for lookups.
+-- Format: "<symbol>@<admin>"
+assetIdKey : AssetId -> Text
+assetIdKey aid = aid.symbol <> "@" <> partyToText aid.admin
 
 -- | A single allocation target within a portfolio
 data TargetAllocation = TargetAllocation
@@ -71,8 +80,17 @@ data SwapLeg = SwapLeg
     toAmount   : Decimal
   deriving (Eq, Show)
 
--- | Calculate the drift of a portfolio from its targets
--- Returns the maximum absolute deviation across all assets
+-- | Settlement timing information (CIP-0056 aligned).
+-- Used by transfer and swap templates to enforce deadlines.
+data SettlementInfo = SettlementInfo
+  with
+    executor       : Party    -- party responsible for settlement execution
+    allocateBefore : Time     -- deadline to allocate funds
+    settleBefore   : Time     -- deadline to complete settlement
+  deriving (Eq, Show)
+
+-- | Calculate the drift of a portfolio from its targets.
+-- Returns the maximum absolute deviation across all assets.
 calcMaxDrift : [TargetAllocation] -> [Holding] -> Decimal
 calcMaxDrift targets holdings =
   let
@@ -108,4 +126,3 @@ validateTargets targets =
       allNonNegative = all (\t -> t.targetPct >= 0.0) targets
       noDuplicates = not (hasDuplicateAssets targets)
   in allNonNegative && noDuplicates && total >= 99.9 && total <= 100.1  -- small tolerance for rounding
-

@@ -1,63 +1,103 @@
--- | CIP-0056 Token Standard integration for Roil.
+-- | CIP-0056 Token Standard integration for Roil Finance — Canton Network aligned.
 -- Wraps token transfer and swap operations so the rebalancer can move
 -- real tokens (CC, USDCx, CBTC) on the Canton Network.
+--
+-- CIP-0056 Compatibility:
+-- This module follows the Canton Improvement Proposal 0056 (Token Standard)
+-- interface pattern. When Splice DARs are available, these templates would
+-- implement the standard interfaces:
+--
+--   interface instance Transferable.I for TransferRequest where
+--     view = Transferable.View with ...
+--     transfer = ...
+--
+--   interface instance Holding.I for TransferRequest where
+--     view = Holding.View with
+--       instrument = InstrumentKey with ...
+--       account = AccountKey with ...
+--       amount = amount
+--
+-- For now, the templates carry all necessary fields and the backend
+-- bridges to the actual Splice token holding/transfer contracts.
 module TokenTransfer where
+
+import Types
+import DA.Time
+import DA.TextMap (TextMap, empty)
 
 -- | Status of a transfer or swap
 data TransferStatus = Pending | Completed | Rejected | Cancelled
   deriving (Eq, Show)
 
--- | Transfer request between parties
+-- | Transfer request between parties.
+-- Includes CIP-0056 settlement fields and extensible metadata.
 template TransferRequest
   with
-    platform : Party
-    sender : Party
-    receiver : Party
-    instrumentId : Text
+    platform        : Party
+    sender          : Party
+    receiver        : Party
+    instrumentId    : Text
     instrumentAdmin : Party
-    amount : Decimal
-    status : TransferStatus
-    memo : Text
-    createdAt : Text
+    amount          : Decimal
+    status          : TransferStatus
+    memo            : Text
+    createdAt       : Time
+    settlement      : Optional SettlementInfo  -- CIP-0056 settlement timing
+    metadata        : TextMap Text             -- extensible metadata (CIP-0056 aligned)
   where
     signatory platform, sender
     observer receiver
     ensure amount > 0.0
 
+    -- Receiver approves the transfer
     choice ApproveTransfer : ContractId TransferLog
+      with
+        approvedAt : Time
       controller receiver
       do
         assertMsg "Transfer must be Pending" (status == Pending)
+        -- Validate settlement deadlines if present
+        case settlement of
+          Some si -> do
+            assertMsg "Allocation deadline passed" (approvedAt <= si.allocateBefore)
+            assertMsg "Settlement deadline passed" (approvedAt <= si.settleBefore)
+          None -> pure ()
         create TransferLog with
           platform; sender; receiver; instrumentId
           instrumentAdmin; amount; memo
-          completedAt = createdAt  -- would be actual time in production
+          completedAt = approvedAt
+          metadata
 
+    -- Receiver rejects the transfer
     choice RejectTransfer : ContractId TransferRequest
       controller receiver
       do
         assertMsg "Transfer must be Pending" (status == Pending)
         create this with status = Rejected
 
+    -- Sender withdraws the transfer
     choice WithdrawTransfer : ()
       controller sender
       do pure ()
 
 -- | Atomic swap request (DvP) for rebalancing.
 -- Two legs: sell one asset, buy another.
+-- Includes CIP-0056 settlement fields for deadline enforcement.
 template SwapRequest
   with
-    platform : Party
-    user : Party
-    sellAsset : Text
-    sellAdmin : Party
-    sellAmount : Decimal
-    buyAsset : Text
-    buyAdmin : Party
-    buyAmount : Decimal      -- expected amount (from quote)
-    minBuyAmount : Decimal   -- minimum acceptable buy amount (slippage protection)
-    status : TransferStatus
-    createdAt : Text
+    platform     : Party
+    user         : Party
+    sellAsset    : Text
+    sellAdmin    : Party
+    sellAmount   : Decimal
+    buyAsset     : Text
+    buyAdmin     : Party
+    buyAmount    : Decimal      -- expected amount (from quote)
+    minBuyAmount : Decimal      -- minimum acceptable buy amount (slippage protection)
+    status       : TransferStatus
+    createdAt    : Time
+    settlement   : Optional SettlementInfo  -- CIP-0056 settlement timing
+    metadata     : TextMap Text             -- extensible metadata
   where
     signatory platform, user
     ensure sellAmount > 0.0 && buyAmount > 0.0 && minBuyAmount >= 0.0 && minBuyAmount <= buyAmount
@@ -66,45 +106,56 @@ template SwapRequest
     choice ExecuteSwap : ContractId SwapLog
       with
         actualBuyAmount : Decimal
-        executedAt : Text
+        executedAt      : Time
       controller platform
       do
         assertMsg "Slippage exceeded" (actualBuyAmount >= minBuyAmount)
+        -- Validate settlement deadlines if present
+        case settlement of
+          Some si -> do
+            assertMsg "Settlement deadline passed" (executedAt <= si.settleBefore)
+          None -> pure ()
         create SwapLog with
           platform; user
           sellAsset; sellAmount
           buyAsset; buyAmount = actualBuyAmount
           timestamp = executedAt
+          metadata
 
+    -- User cancels the swap
     choice CancelSwap : ()
       controller user
       do pure ()
 
--- | Immutable transfer log
+-- | Immutable transfer log.
+-- Includes metadata for full audit trail.
 template TransferLog
   with
-    platform : Party
-    sender : Party
-    receiver : Party
-    instrumentId : Text
+    platform        : Party
+    sender          : Party
+    receiver        : Party
+    instrumentId    : Text
     instrumentAdmin : Party
-    amount : Decimal
-    memo : Text
-    completedAt : Text
+    amount          : Decimal
+    memo            : Text
+    completedAt     : Time
+    metadata        : TextMap Text
   where
     signatory platform
     observer sender, receiver
 
--- | Immutable swap log
+-- | Immutable swap log.
+-- Includes metadata for full audit trail.
 template SwapLog
   with
-    platform : Party
-    user : Party
+    platform  : Party
+    user      : Party
     sellAsset : Text
     sellAmount : Decimal
-    buyAsset : Text
+    buyAsset  : Text
     buyAmount : Decimal
-    timestamp : Text
+    timestamp : Time
+    metadata  : TextMap Text
   where
     signatory platform
     observer user

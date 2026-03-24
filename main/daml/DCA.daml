@@ -1,30 +1,55 @@
--- | Dollar Cost Averaging (DCA) schedule contracts
+-- | Dollar Cost Averaging (DCA) schedule contracts — Canton Network aligned.
 -- Users set up recurring purchases of specific assets at fixed intervals.
--- Each DCA execution generates a TX → contributes to App Rewards.
+-- Each DCA execution generates a TX that contributes to App Rewards.
+--
+-- Contract key: (platform, user, sourceAsset, targetAsset) — one DCA schedule
+-- per asset pair per user.
 module DCA where
 
 import Types
+import DA.Time
 
--- | DCA schedule — defines a recurring purchase plan
+-- | Result of ExecuteDCA choice
+data ExecuteDCA_Result = ExecuteDCA_Result
+  with
+    scheduleCid  : ContractId DCASchedule
+    executionCid : ContractId DCAExecution
+  deriving (Eq, Show)
+
+-- | Result of CompleteDCAExecution choice
+data CompleteDCAExecution_Result = CompleteDCAExecution_Result
+  with
+    logCid : ContractId DCALog
+  deriving (Eq, Show)
+
+-- | DCA schedule — defines a recurring purchase plan.
+-- Key: (platform, user, sourceAsset, targetAsset) ensures one active schedule
+-- per asset pair per user on a given platform.
 template DCASchedule
   with
-    platform       : Party
-    user           : Party
-    sourceAsset    : AssetId      -- asset to sell (e.g., USDCx)
-    targetAsset    : AssetId      -- asset to buy (e.g., CBTC)
-    amountPerBuy   : Decimal      -- amount of sourceAsset per execution
-    frequency      : DCAFrequency
-    totalExecutions : Int         -- how many times DCA has executed
-    isActive       : Bool
-    createdAt      : Text         -- ISO timestamp
+    platform        : Party
+    user            : Party
+    sourceAsset     : AssetId      -- asset to sell (e.g., USDCx)
+    targetAsset     : AssetId      -- asset to buy (e.g., CBTC)
+    amountPerBuy    : Decimal      -- amount of sourceAsset per execution
+    frequency       : DCAFrequency
+    totalExecutions : Int          -- how many times DCA has executed
+    isActive        : Bool
+    createdAt       : Time
   where
     signatory platform
     observer user
     ensure amountPerBuy > 0.0 && sourceAsset /= targetAsset
 
-    -- Execute a single DCA buy
-    -- Called by backend/trigger on schedule
-    choice ExecuteDCA : (ContractId DCASchedule, ContractId DCAExecution)
+    key (platform, user, sourceAsset, targetAsset) : (Party, Party, AssetId, AssetId)
+    maintainer key._1
+
+    -- Execute a single DCA buy.
+    -- Called by backend/trigger on schedule.
+    -- Returns structured result with both contract IDs.
+    choice ExecuteDCA : ExecuteDCA_Result
+      with
+        executedAt : Time
       controller platform
       do
         assertMsg "DCA schedule is not active" isActive
@@ -39,8 +64,8 @@ template DCASchedule
           targetAmount = 0.0       -- filled after swap
           executionNumber = totalExecutions + 1
           status = Pending
-          executedAt = "pending"
-        pure (scheduleCid, executionCid)
+          executedAt
+        pure ExecuteDCA_Result with ..
 
     -- User updates the DCA amount
     choice UpdateDCAAmount : ContractId DCASchedule
@@ -87,17 +112,18 @@ template DCAExecution
     targetAmount    : Decimal     -- amount of target received
     executionNumber : Int
     status          : RebalanceStatus
-    executedAt      : Text
+    executedAt      : Time
   where
     signatory platform
     observer user
     ensure sourceAmount > 0.0
 
-    -- Platform fills in the execution result after Cantex swap
-    choice CompleteDCAExecution : ContractId DCALog
+    -- Platform fills in the execution result after Cantex swap.
+    -- Returns structured result wrapping the log contract ID.
+    choice CompleteDCAExecution : CompleteDCAExecution_Result
       with
         receivedAmount : Decimal
-        completedAt    : Text
+        completedAt    : Time
       controller platform
       do
         assertMsg "Execution must be Pending" (status == Pending)
@@ -111,16 +137,15 @@ template DCAExecution
           executionNumber
           timestamp = completedAt
 
-        -- FEATURED APP REWARDS INTEGRATION POINT:
+        -- Featured App Rewards integration:
         -- After a successful DCA execution, the backend should call
         -- FeaturedAppConfig.RecordActivity with:
         --   activityType = DCAExecution
         --   description  = "DCA #<N>: <sourceAmount> <source> -> <target>"
-        -- On the real Canton Network, this will exercise
-        -- FeaturedAppRight_CreateActivityMarker to generate an
-        -- AppRewardCoupon, earning CC rewards for the platform.
+        -- When Splice DARs are available and FeaturedAppRight is held,
+        -- this triggers AppRewardCoupon creation automatically.
 
-        pure logCid
+        pure CompleteDCAExecution_Result with ..
 
     -- Platform marks execution as failed
     choice FailDCAExecution : ContractId DCAExecution
@@ -141,7 +166,7 @@ template DCALog
     sourceAmount    : Decimal
     targetAmount    : Decimal
     executionNumber : Int
-    timestamp       : Text
+    timestamp       : Time
   where
     signatory platform
     observer user

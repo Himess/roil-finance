@@ -7,6 +7,12 @@ import { rewardsEngine } from './rewards.js';
 import { logger } from '../monitoring/logger.js';
 import { recordSnapshot } from '../services/performance-tracker.js';
 import { tokenTransferService } from '../services/token-transfer.js';
+import {
+  numberToDecimal,
+  decimalAdd,
+  decimalMul,
+  decimalLt,
+} from '../utils/decimal.js';
 
 // ---------------------------------------------------------------------------
 // Daml Trigger Migration Path
@@ -61,6 +67,70 @@ export function isSlippageAcceptable(
   if (expectedOutput <= 0) return true;
   const slippage = (expectedOutput - actualOutput) / expectedOutput;
   return slippage <= tolerance;
+}
+
+// ---------------------------------------------------------------------------
+// Fee budget control
+// ---------------------------------------------------------------------------
+
+/** Fixed cost estimate per swap leg in CC when prepare endpoint is unavailable */
+const DEFAULT_SWAP_COST_CC = '0.5';
+
+/** Fixed cost estimate per ledger command in CC */
+const DEFAULT_COMMAND_COST_CC = '0.1';
+
+/**
+ * Check that the platform's CC balance is sufficient to cover the estimated
+ * transaction costs. Throws if insufficient balance.
+ *
+ * Cost estimation strategy:
+ * 1. Try the /v2/interactive-submission/prepare endpoint for accurate cost
+ * 2. Fall back to a fixed estimate (DEFAULT_SWAP_COST_CC per swap leg +
+ *    DEFAULT_COMMAND_COST_CC per ledger command)
+ *
+ * @param estimatedCostCc - Estimated total cost as a Daml Decimal string
+ * @param operationDescription - Human-readable description for error messages
+ */
+export async function checkFeeBudget(
+  estimatedCostCc: string,
+  operationDescription: string,
+): Promise<void> {
+  try {
+    // Query the platform's CC balance from Cantex
+    const balances = await cantex.getBalances(config.platformParty);
+    const ccBalance = balances.find(b => b.asset === 'CC');
+    const ccBalanceStr = numberToDecimal(ccBalance?.amount ?? 0);
+
+    if (decimalLt(ccBalanceStr, estimatedCostCc)) {
+      throw new Error(
+        `Insufficient CC balance for ${operationDescription}. ` +
+        `Required: ${estimatedCostCc} CC, Available: ${ccBalanceStr} CC`,
+      );
+    }
+
+    logger.info(`[fee-budget] ${operationDescription}: estimated cost ${estimatedCostCc} CC, balance ${ccBalanceStr} CC`);
+  } catch (err) {
+    // If the error is our own insufficient balance error, re-throw
+    if (err instanceof Error && err.message.startsWith('Insufficient CC balance')) {
+      throw err;
+    }
+    // If balance check itself fails (e.g. Cantex down), log warning but allow operation
+    logger.warn(`[fee-budget] Could not verify CC balance for ${operationDescription}`, {
+      error: String(err),
+    });
+  }
+}
+
+/**
+ * Estimate the total CC cost for a rebalance operation.
+ *
+ * @param numSwapLegs - Number of swap legs planned
+ * @param numLedgerCommands - Number of ledger commands (InitiateRebalance, SetSwapLegs, CompleteRebalance, SyncHoldings)
+ */
+export function estimateRebalanceCost(numSwapLegs: number, numLedgerCommands: number = 4): string {
+  const swapCost = decimalMul(DEFAULT_SWAP_COST_CC, numberToDecimal(numSwapLegs));
+  const commandCost = decimalMul(DEFAULT_COMMAND_COST_CC, numberToDecimal(numLedgerCommands));
+  return decimalAdd(swapCost, commandCost);
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +390,10 @@ export class RebalanceEngine {
         return { success: true, swapLegs: [], driftBefore, driftAfter: driftBefore, error: 'Already balanced' };
       }
 
+      // 2b. Fee budget check — ensure platform has enough CC for transaction costs
+      const estimatedCost = estimateRebalanceCost(plannedLegs.length, 4);
+      await checkFeeBudget(estimatedCost, `rebalance ${portfolioContractId} (${plannedLegs.length} legs)`);
+
       // 3. Initiate rebalance on ledger
       const initiateResult = await ledger.exerciseAs<[string, string]>(
         TEMPLATES.Portfolio,
@@ -330,12 +404,12 @@ export class RebalanceEngine {
       );
       const [newPortfolioCid, requestCid] = initiateResult;
 
-      // 4. Set swap legs on the request
+      // 4. Set swap legs on the request — use numberToDecimal for Daml Decimal precision
       const damlLegs = plannedLegs.map((leg) => ({
         fromAsset: leg.fromAsset,
         toAsset: leg.toAsset,
-        fromAmount: String(leg.fromAmount),
-        toAmount: String(leg.toAmount),
+        fromAmount: numberToDecimal(leg.fromAmount),
+        toAmount: numberToDecimal(leg.toAmount),
       }));
 
       const setLegsResult = await ledger.exerciseAs<string>(
@@ -427,12 +501,12 @@ export class RebalanceEngine {
         return { success: false, swapLegs: [], driftBefore, driftAfter: driftBefore, error: 'All swaps exceeded slippage tolerance' };
       }
 
-      // 6. Complete rebalance on ledger
+      // 6. Complete rebalance on ledger — use numberToDecimal for Daml Decimal precision
       const completedDamlLegs = executedLegs.map((leg) => ({
         fromAsset: leg.fromAsset,
         toAsset: leg.toAsset,
-        fromAmount: String(leg.fromAmount),
-        toAmount: String(leg.toAmount),
+        fromAmount: numberToDecimal(leg.fromAmount),
+        toAmount: numberToDecimal(leg.toAmount),
       }));
 
       await ledger.exerciseAs(
@@ -471,8 +545,8 @@ export class RebalanceEngine {
         {
           newHoldings: updatedHoldings.map((h) => ({
             asset: h.asset,
-            amount: String(h.amount),
-            valueCc: String(h.valueCc),
+            amount: numberToDecimal(h.amount),
+            valueCc: numberToDecimal(h.valueCc),
           })),
         },
         platform,
@@ -708,6 +782,75 @@ export class RebalanceEngine {
     // For future DI support — currently uses module-level singletons
     // To migrate: store deps as instance fields and use this.ledger instead of ledger
     return new RebalanceEngine();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Trigger integration
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a portfolio event from TriggerManager.
+ * Checks drift and triggers rebalance if threshold exceeded.
+ * Adds jitter to prevent thundering herd when multiple portfolios fire at once.
+ */
+export async function handlePortfolioEvent(
+  portfolio: { contractId: string; payload: PortfolioPayload },
+): Promise<RebalanceResult | null> {
+  const { payload } = portfolio;
+  if (!payload.isActive) return null;
+
+  // Extract drift threshold from trigger mode
+  const triggerMode = payload.triggerMode as { tag: string; value?: string };
+  if (triggerMode.tag !== 'DriftThreshold') return null;
+  const threshold = Number(triggerMode.value);
+
+  const drift = rebalanceEngine.calculateDrift(payload.holdings, payload.targets);
+  if (drift.maxDrift < threshold) return null;
+
+  logger.info(
+    `[rebalance] Portfolio event: drift=${drift.maxDrift.toFixed(2)}% >= threshold=${threshold}%, triggering rebalance`,
+    { contractId: portfolio.contractId, user: payload.user },
+  );
+
+  // Add jitter (0-60s) to prevent thundering herd
+  const jitterMs = Math.random() * 60_000;
+  await new Promise(resolve => setTimeout(resolve, jitterMs));
+
+  return rebalanceEngine.executeRebalance(portfolio.contractId);
+}
+
+/**
+ * Process a pending rebalance request by contract ID.
+ * Called by TriggerManager when a RebalanceRequest event is detected.
+ */
+export async function processRebalanceRequest(
+  requestCid: string,
+): Promise<RebalanceResult | null> {
+  const platform = config.platformParty;
+
+  try {
+    // Find the portfolio associated with this request
+    const requests = await ledger.query(TEMPLATES.RebalanceRequest, platform);
+    const request = requests.find(r => r.contractId === requestCid);
+    if (!request) {
+      logger.warn(`[rebalance] RebalanceRequest not found: ${requestCid}`);
+      return null;
+    }
+
+    const portfolioId = (request.payload as Record<string, unknown>).portfolioId as string;
+    if (!portfolioId) {
+      logger.warn(`[rebalance] RebalanceRequest missing portfolioId: ${requestCid}`);
+      return null;
+    }
+
+    return await rebalanceEngine.executeRebalance(portfolioId);
+  } catch (err) {
+    logger.error(`[rebalance] processRebalanceRequest failed`, {
+      requestCid,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
   }
 }
 

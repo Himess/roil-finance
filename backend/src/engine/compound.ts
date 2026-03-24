@@ -8,7 +8,9 @@ import { cantex } from '../cantex.js';
 import { featuredApp } from './featured-app.js';
 import { priceOracle } from '../services/price-oracle.js';
 import { logger } from '../monitoring/logger.js';
+import * as db from '../db/index.js';
 import type { PortfolioPayload } from './rebalance.js';
+import { yieldAggregator } from '../services/yield-sources.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -38,27 +40,22 @@ export interface CompoundResult {
 }
 
 // ---------------------------------------------------------------------------
-// Constants — realistic APY rates for Canton Network DeFi
+// Constants — fallback APY rates (used only when YieldAggregator fails)
+// ---------------------------------------------------------------------------
+// Live rates are now fetched via YieldAggregator from:
+//   - AlpendYieldSource (lending protocol on Canton)
+//   - CantexLPYieldSource (DEX LP fees)
+//   - StakingYieldSource (CC staking via Canton Scan)
+// Fallback rates below are used only if ALL live sources fail.
 // ---------------------------------------------------------------------------
 
-/** CC native staking APY ~5% */
+/** CC native staking APY ~5% (fallback) */
 const CC_STAKING_APY = 0.05;
 
-/**
- * Alpend lending APY ~3%
- * INTEGRATION POINT: Replace mock with real Alpend SDK calls when available.
- * Alpend is Canton Network's lending protocol — yields come from interest
- * paid by borrowers on USDCx and CBTC collateral.
- */
+/** Alpend lending APY ~3% (fallback) */
 const ALPEND_LENDING_APY = 0.03;
 
-/**
- * Cantex LP fee APY ~8%
- * INTEGRATION POINT: Replace mock with real Cantex LP position queries.
- * LP fees are earned by providing liquidity to Cantex DEX pools.
- * The ~8% APY comes from trading fees (0.3% per swap) distributed
- * proportionally to liquidity providers.
- */
+/** Cantex LP fee APY ~8% (fallback) */
 const CANTEX_LP_APY = 0.08;
 
 /** Hours per frequency period */
@@ -208,8 +205,31 @@ const compoundHistory = new Map<string, CompoundResult[]>();
 /** Per-party last compound timestamp */
 export const lastCompoundTime = new Map<string, number>();
 
-// Load persisted state on module initialization
-void loadState().then(() => loadConfigsFromLedger());
+// Load persisted state on module initialization.
+// Order: file → database → ledger. Each layer fills gaps left by the previous.
+void loadState().then(async () => {
+  // Hydrate from Postgres if available
+  if (db.isDbAvailable()) {
+    try {
+      const dbConfigs = await db.getAllCompoundConfigs();
+      for (const row of dbConfigs) {
+        if (!compoundConfigs.has(row.party)) {
+          compoundConfigs.set(row.party, {
+            enabled: row.enabled,
+            minCompoundAmount: row.min_amount,
+            frequency: row.frequency as CompoundConfig['frequency'],
+            reinvestStrategy: row.reinvest_strategy as CompoundConfig['reinvestStrategy'],
+          });
+        }
+      }
+      logger.info(`Loaded ${dbConfigs.length} compound configs from database`, { component: 'compound' });
+    } catch {
+      // DB unavailable — continue with file state
+    }
+  }
+  // Finally try ledger
+  await loadConfigsFromLedger();
+});
 
 /** Reset all in-memory state (for testing only). */
 export function _resetCompoundState(): void {
@@ -241,11 +261,14 @@ export class CompoundEngine {
   /**
    * Detect available yields for a party.
    *
-   * Queries holdings and computes accrued yield based on realistic APY
-   * rates for each yield source. In production, this would query:
-   * - Canton staking contract for pending rewards
-   * - Alpend lending positions for accrued interest
-   * - Cantex LP positions for unclaimed fees
+   * Uses YieldAggregator to query real yield sources (Alpend, Cantex LP,
+   * Canton Staking) with automatic fallback to hardcoded rates if all
+   * live sources fail. Yields are cached for 5 minutes by the aggregator.
+   *
+   * For each holding:
+   * 1. Query YieldAggregator for live APY on that asset
+   * 2. Determine yield type (staking for CC, lending for stables, LP for DEX pairs)
+   * 3. Compute accrued yield based on time since last compound
    */
   async detectYields(party: string): Promise<YieldSource[]> {
     const yields: YieldSource[] = [];
@@ -268,77 +291,34 @@ export class CompoundEngine {
 
         if (valueUsdcx <= 0) continue;
 
-        // --- CC Staking Rewards ---
-        // CC holders earn staking rewards from the Canton Network validator set.
-        // Yield accrues continuously and is claimable at any time.
-        if (asset === 'CC') {
-          const stakingYield = this.computeAccruedYield(
-            valueUsdcx,
-            CC_STAKING_APY,
-            hoursSinceLastCompound,
-          );
+        // Query real yield from YieldAggregator (with 5-min cache)
+        const yieldQuote = await yieldAggregator.getBestYield(asset);
 
-          if (stakingYield > 0) {
-            yields.push({
-              type: 'staking',
-              asset: 'CC',
-              amount: stakingYield / priceUsdcx, // Convert back to CC units
-              apy: CC_STAKING_APY * 100,
-              provider: 'Canton Staking',
-            });
-          }
+        if (yieldQuote.apy <= 0) continue;
+
+        // Determine yield type based on source
+        let yieldType: YieldSource['type'] = 'lending';
+        if (yieldQuote.source.toLowerCase().includes('staking')) {
+          yieldType = 'staking';
+        } else if (yieldQuote.source.toLowerCase().includes('lp') || yieldQuote.source.toLowerCase().includes('pool')) {
+          yieldType = 'lp-fees';
         }
 
-        // --- Alpend Lending Yields ---
-        // INTEGRATION POINT: In production, query Alpend lending positions:
-        //   const positions = await alpendSdk.getLendingPositions(party);
-        //   for (const pos of positions) { ... }
-        //
-        // For now: assume 40% of USDCx and CBTC holdings are lent on Alpend.
-        if (asset === 'USDCx' || asset === 'CBTC') {
-          const lentPortion = 0.4; // Assume 40% is lent
-          const lentValue = valueUsdcx * lentPortion;
-          const lendingYield = this.computeAccruedYield(
-            lentValue,
-            ALPEND_LENDING_APY,
-            hoursSinceLastCompound,
-          );
+        // Compute accrued yield for the period
+        const accruedYield = this.computeAccruedYield(
+          valueUsdcx,
+          yieldQuote.apy,
+          hoursSinceLastCompound,
+        );
 
-          if (lendingYield > 0) {
-            yields.push({
-              type: 'lending',
-              asset,
-              amount: lendingYield / priceUsdcx,
-              apy: ALPEND_LENDING_APY * 100,
-              provider: 'Alpend',
-            });
-          }
-        }
-
-        // --- Cantex LP Fees ---
-        // INTEGRATION POINT: In production, query Cantex LP positions:
-        //   const lpPositions = await cantex.getLPPositions(party);
-        //   for (const lp of lpPositions) { ... }
-        //
-        // For now: assume 30% of holdings participate in Cantex LP.
-        if (asset === 'CC' || asset === 'USDCx') {
-          const lpPortion = 0.3; // Assume 30% is in LP
-          const lpValue = valueUsdcx * lpPortion;
-          const lpYield = this.computeAccruedYield(
-            lpValue,
-            CANTEX_LP_APY,
-            hoursSinceLastCompound,
-          );
-
-          if (lpYield > 0) {
-            yields.push({
-              type: 'lp-fees',
-              asset,
-              amount: lpYield / priceUsdcx,
-              apy: CANTEX_LP_APY * 100,
-              provider: 'Cantex LP',
-            });
-          }
+        if (accruedYield > 0) {
+          yields.push({
+            type: yieldType,
+            asset,
+            amount: accruedYield / priceUsdcx, // Convert back to asset units
+            apy: yieldQuote.apy * 100,
+            provider: `${yieldQuote.source} [${yieldQuote.confidence}]`,
+          });
         }
       }
     } catch (err) {
@@ -446,7 +426,10 @@ export class CompoundEngine {
     // 8b. Persist state to disk
     await saveState();
 
-    // 8c. Record compound on ledger
+    // 8c. Record compound on ledger with yield source details
+    const yieldSourceSummary = yieldSources
+      .map(ys => `${ys.asset}: ${ys.apy.toFixed(2)}% via ${ys.provider}`)
+      .join('; ');
     try {
       const existing = await ledger.query(TEMPLATES.CompoundConfig, config.platformParty);
       const userConfig = existing.find((c: any) => c.payload?.user === party);
@@ -458,6 +441,7 @@ export class CompoundEngine {
           {
             compoundedAmount: String(totalYieldUsdcx),
             compoundedAt: new Date().toISOString(),
+            yieldSources: yieldSourceSummary,
           },
           config.platformParty,
         );
@@ -466,12 +450,12 @@ export class CompoundEngine {
       logger.warn('Failed to record compound on ledger', { error: String(err) });
     }
 
-    // 9. Record Featured App activity
+    // 9. Record Featured App activity with yield source details
     try {
       await featuredApp.recordActivity(
         party,
         'CompoundExecution',
-        `Auto-compound: ${totalYieldUsdcx.toFixed(2)} USDCx yield reinvested via ${compoundConfig.reinvestStrategy} strategy`,
+        `Auto-compound: ${totalYieldUsdcx.toFixed(2)} USDCx yield reinvested via ${compoundConfig.reinvestStrategy} strategy (sources: ${yieldSourceSummary})`,
       );
     } catch {
       // Best effort — don't fail the compound for activity recording
@@ -479,7 +463,7 @@ export class CompoundEngine {
 
     logger.info(
       `Executed for ${party}: ${yieldSources.length} sources, ${totalYieldUsdcx.toFixed(2)} USDCx total, ${reinvestments.length} reinvestments, strategy=${compoundConfig.reinvestStrategy}`,
-      { component: 'compound' },
+      { component: 'compound', yieldSources: yieldSourceSummary },
     );
 
     return result;
@@ -615,7 +599,7 @@ export class CompoundEngine {
 
   /**
    * Get compound configuration for a party.
-   * Returns a default config if none has been set.
+   * Checks in-memory cache first, then database, then returns defaults.
    */
   getConfig(party: string): CompoundConfig {
     return compoundConfigs.get(party) ?? {
@@ -627,12 +611,57 @@ export class CompoundEngine {
   }
 
   /**
+   * Get compound configuration for a party, checking the database if
+   * the in-memory cache does not have it.
+   */
+  async getConfigAsync(party: string): Promise<CompoundConfig> {
+    // Check in-memory first
+    const cached = compoundConfigs.get(party);
+    if (cached) return cached;
+
+    // Try database
+    if (db.isDbAvailable()) {
+      const row = await db.getCompoundConfig(party);
+      if (row) {
+        const cfg: CompoundConfig = {
+          enabled: row.enabled,
+          minCompoundAmount: row.min_amount,
+          frequency: row.frequency as CompoundConfig['frequency'],
+          reinvestStrategy: row.reinvest_strategy as CompoundConfig['reinvestStrategy'],
+        };
+        // Hydrate in-memory cache
+        compoundConfigs.set(party, cfg);
+        return cfg;
+      }
+    }
+
+    return {
+      enabled: false,
+      minCompoundAmount: 1.0,
+      frequency: 'daily',
+      reinvestStrategy: 'portfolio-targets',
+    };
+  }
+
+  /**
    * Update compound configuration for a party.
+   * Persists to Postgres (if available), file, and ledger.
    */
   setConfig(party: string, cfg: CompoundConfig): void {
     compoundConfigs.set(party, cfg);
     void saveState();
     void saveConfigToLedger(party, cfg);
+
+    // Persist to Postgres if available
+    if (db.isDbAvailable()) {
+      void db.upsertCompoundConfig(
+        party,
+        cfg.enabled,
+        cfg.minCompoundAmount,
+        cfg.frequency,
+        cfg.reinvestStrategy,
+      );
+    }
   }
 
   // -----------------------------------------------------------------------

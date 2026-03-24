@@ -1,0 +1,2250 @@
+openapi: 3.0.3
+info:
+  title: Roil Finance API
+  description: |
+    Backend API for Roil Finance — an institutional-grade portfolio rebalancing
+    platform built on Canton Network with Daml smart contracts.
+
+    Supports portfolio management, DCA scheduling, reward tracking, market data,
+    token transfers, yield compounding, and platform administration.
+  version: 1.0.0
+  contact:
+    name: Roil Finance
+    url: https://roil.app
+
+servers:
+  - url: http://localhost:3001
+    description: Local development
+  - url: https://api.roil.app
+    description: Production
+
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+
+security:
+  - bearerAuth: []
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT token containing `actAs` array of Canton party identifiers.
+        Algorithms supported: HS256 (dev), RS256, ES256.
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+
+  schemas:
+    SuccessResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          example: "Something went wrong"
+
+    AssetId:
+      type: object
+      required: [symbol, admin]
+      properties:
+        symbol:
+          type: string
+          example: "CBTC"
+        admin:
+          type: string
+          example: "admin-party::1220abc"
+
+    TargetAllocation:
+      type: object
+      required: [asset, targetPct]
+      properties:
+        asset:
+          $ref: '#/components/schemas/AssetId'
+        targetPct:
+          type: number
+          minimum: 0
+          maximum: 100
+          example: 25
+
+    TriggerMode:
+      oneOf:
+        - type: string
+          enum: [Manual]
+        - type: object
+          properties:
+            tag:
+              type: string
+              enum: [DriftThreshold]
+            value:
+              type: number
+              minimum: 0.1
+              maximum: 100
+              example: 5.0
+        - type: object
+          properties:
+            tag:
+              type: string
+              enum: [PriceCondition]
+            value:
+              type: object
+              properties:
+                conditionAsset:
+                  type: string
+                targetPrice:
+                  type: number
+                conditionAction:
+                  type: string
+                  enum: [sell_above, buy_below]
+
+    Portfolio:
+      type: object
+      properties:
+        contractId:
+          type: string
+        user:
+          type: string
+        platform:
+          type: string
+        targets:
+          type: array
+          items:
+            $ref: '#/components/schemas/TargetAllocation'
+        holdings:
+          type: array
+          items:
+            type: object
+        triggerMode:
+          $ref: '#/components/schemas/TriggerMode'
+        isActive:
+          type: boolean
+
+    DCASchedule:
+      type: object
+      properties:
+        contractId:
+          type: string
+        user:
+          type: string
+        sourceAsset:
+          $ref: '#/components/schemas/AssetId'
+        targetAsset:
+          $ref: '#/components/schemas/AssetId'
+        amountPerBuy:
+          type: number
+        frequency:
+          type: string
+          enum: [Hourly, Daily, Weekly, Monthly]
+        totalExecutions:
+          type: integer
+        isActive:
+          type: boolean
+        createdAt:
+          type: string
+          format: date-time
+
+    RewardStats:
+      type: object
+      properties:
+        tier:
+          type: string
+          enum: [Bronze, Silver, Gold, Platinum]
+        txCount:
+          type: integer
+        totalRewards:
+          type: number
+        nextTierAt:
+          type: integer
+
+    CompoundConfig:
+      type: object
+      required: [enabled, minCompoundAmount, frequency, reinvestStrategy]
+      properties:
+        enabled:
+          type: boolean
+        minCompoundAmount:
+          type: number
+        frequency:
+          type: string
+          enum: [hourly, daily, weekly]
+        reinvestStrategy:
+          type: string
+          enum: [portfolio-targets, same-asset, usdc-only]
+
+    PriceData:
+      type: object
+      additionalProperties:
+        type: object
+        properties:
+          price:
+            type: number
+          change24h:
+            type: number
+          confidence:
+            type: number
+          timestamp:
+            type: string
+            format: date-time
+
+    AdminStatus:
+      type: object
+      properties:
+        paused:
+          type: boolean
+        frozen:
+          type: boolean
+        feeRate:
+          type: number
+        allowedAssets:
+          type: array
+          items:
+            type: string
+        activePortfolios:
+          type: integer
+        activeDCAs:
+          type: integer
+        startedAt:
+          type: string
+          format: date-time
+
+    AuditLogEntry:
+      type: object
+      properties:
+        action:
+          type: string
+        actor:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
+        details:
+          type: object
+
+    HealthCheck:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded]
+        timestamp:
+          type: string
+          format: date-time
+        network:
+          type: string
+        checks:
+          type: object
+          properties:
+            server:
+              type: string
+            ledger:
+              type: string
+            cantex:
+              type: string
+
+# ---------------------------------------------------------------------------
+# Tags
+# ---------------------------------------------------------------------------
+
+tags:
+  - name: Portfolio
+    description: Portfolio management — create, rebalance, simulate, and configure
+  - name: DCA
+    description: Dollar-cost averaging schedule management
+  - name: Rewards
+    description: Reward tracking, tiers, leaderboards, and referrals
+  - name: Market
+    description: Market data, prices, pools, quotes, and DEX aggregation
+  - name: Transfers
+    description: Token transfers, swaps, and holdings
+  - name: Compound
+    description: Yield compounding configuration and execution
+  - name: Admin
+    description: Platform administration — pause, freeze, fee management
+  - name: System
+    description: Health checks, metrics, and operational endpoints
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+
+paths:
+
+  # =========================================================================
+  # Portfolio
+  # =========================================================================
+
+  /api/portfolio/templates:
+    get:
+      tags: [Portfolio]
+      summary: List available portfolio templates
+      security: []
+      responses:
+        '200':
+          description: List of portfolio templates
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        id:
+                          type: string
+                        name:
+                          type: string
+                        description:
+                          type: string
+                        targets:
+                          type: array
+                          items:
+                            $ref: '#/components/schemas/TargetAllocation'
+                        triggerMode:
+                          type: object
+                        riskLevel:
+                          type: string
+                        tags:
+                          type: array
+                          items:
+                            type: string
+
+  /api/portfolio/from-template:
+    post:
+      tags: [Portfolio]
+      summary: Create portfolio from a template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, templateId]
+              properties:
+                user:
+                  type: string
+                templateId:
+                  type: string
+      responses:
+        '201':
+          description: Portfolio created from template
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Template not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/system/config:
+    get:
+      tags: [Portfolio]
+      summary: Get system configuration for frontend
+      security: []
+      responses:
+        '200':
+          description: System configuration
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      network:
+                        type: string
+                      supportedAssets:
+                        type: array
+                        items:
+                          type: string
+                      platformFeeRate:
+                        type: number
+
+  /api/portfolio/{party}:
+    get:
+      tags: [Portfolio]
+      summary: Get all portfolios for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of portfolios
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Portfolio'
+        '403':
+          description: Not authorized for this party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio:
+    post:
+      tags: [Portfolio]
+      summary: Create a new portfolio
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, targets, triggerMode]
+              properties:
+                user:
+                  type: string
+                targets:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TargetAllocation'
+                  minItems: 2
+                triggerMode:
+                  $ref: '#/components/schemas/TriggerMode'
+      responses:
+        '201':
+          description: Portfolio created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error or targets do not sum to 100%
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/targets:
+    put:
+      tags: [Portfolio]
+      summary: Update target allocations
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newTargets]
+              properties:
+                newTargets:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/TargetAllocation'
+                  minItems: 2
+      responses:
+        '200':
+          description: Targets updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/simulate:
+    post:
+      tags: [Portfolio]
+      summary: Simulate rebalance (dry-run)
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Simulation result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      currentDrift:
+                        type: object
+                      plannedSwaps:
+                        type: array
+                        items:
+                          type: object
+                      estimatedSwapCount:
+                        type: integer
+                      wouldRebalance:
+                        type: boolean
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/rebalance:
+    post:
+      tags: [Portfolio]
+      summary: Trigger manual rebalance
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rebalance result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Rebalance failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/drift:
+    get:
+      tags: [Portfolio]
+      summary: Check portfolio drift from targets
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Drift data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      maxDrift:
+                        type: number
+                      drifts:
+                        type: object
+                        additionalProperties:
+                          type: number
+                      needsRebalance:
+                        type: boolean
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/history:
+    get:
+      tags: [Portfolio]
+      summary: Get rebalance history for a portfolio
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rebalance history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        swapLegs:
+                          type: array
+                          items:
+                            type: object
+                        driftBefore:
+                          type: string
+                        timestamp:
+                          type: string
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/trigger-mode:
+    put:
+      tags: [Portfolio]
+      summary: Update trigger mode
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [triggerMode]
+              properties:
+                triggerMode:
+                  $ref: '#/components/schemas/TriggerMode'
+      responses:
+        '200':
+          description: Trigger mode updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/deactivate:
+    post:
+      tags: [Portfolio]
+      summary: Deactivate a portfolio
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio deactivated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/activate:
+    post:
+      tags: [Portfolio]
+      summary: Activate a portfolio
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio activated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/rebalance-detail:
+    get:
+      tags: [Portfolio]
+      summary: Get rebalance detail by contract ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Rebalance detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Transaction not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{id}/estimate-cost:
+    post:
+      tags: [Portfolio]
+      summary: Estimate rebalance transaction cost
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Cost estimate
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      estimatedCost:
+                        type: number
+                        nullable: true
+                      note:
+                        type: string
+
+  /api/portfolio/{id}:
+    delete:
+      tags: [Portfolio]
+      summary: Archive/delete a portfolio
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Portfolio archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: Portfolio not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/portfolio/{party}/performance:
+    get:
+      tags: [Portfolio]
+      summary: Get performance summary and history
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: window
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [1d, 7d, 30d, 90d, all]
+      responses:
+        '200':
+          description: Performance data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      summary:
+                        type: object
+                      history:
+                        type: array
+                        items:
+                          type: object
+
+  /api/portfolio/{party}/events:
+    get:
+      tags: [Portfolio]
+      summary: Server-Sent Events stream for real-time portfolio updates
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # =========================================================================
+  # DCA
+  # =========================================================================
+
+  /api/dca/{party}:
+    get:
+      tags: [DCA]
+      summary: List DCA schedules for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: List of DCA schedules
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DCASchedule'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca:
+    post:
+      tags: [DCA]
+      summary: Create a new DCA schedule
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, sourceAsset, targetAsset, amountPerBuy, frequency]
+              properties:
+                user:
+                  type: string
+                sourceAsset:
+                  $ref: '#/components/schemas/AssetId'
+                targetAsset:
+                  $ref: '#/components/schemas/AssetId'
+                amountPerBuy:
+                  type: number
+                frequency:
+                  type: string
+                  enum: [Hourly, Daily, Weekly, Monthly]
+      responses:
+        '201':
+          description: DCA schedule created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}/amount:
+    put:
+      tags: [DCA]
+      summary: Update DCA buy amount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newAmount]
+              properties:
+                newAmount:
+                  type: number
+      responses:
+        '200':
+          description: Amount updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}/frequency:
+    put:
+      tags: [DCA]
+      summary: Update DCA frequency
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [newFrequency]
+              properties:
+                newFrequency:
+                  type: string
+                  enum: [Hourly, Daily, Weekly, Monthly]
+      responses:
+        '200':
+          description: Frequency updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}/pause:
+    post:
+      tags: [DCA]
+      summary: Pause a DCA schedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Schedule paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Schedule already paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}/resume:
+    post:
+      tags: [DCA]
+      summary: Resume a paused DCA schedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Schedule resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Schedule already active
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}:
+    delete:
+      tags: [DCA]
+      summary: Cancel (archive) a DCA schedule
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Schedule cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/dca/{id}/history:
+    get:
+      tags: [DCA]
+      summary: Get DCA execution history
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Execution history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '404':
+          description: DCA schedule not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =========================================================================
+  # Rewards
+  # =========================================================================
+
+  /api/rewards/leaderboard:
+    get:
+      tags: [Rewards]
+      summary: Get anonymized leaderboard (top 20)
+      security: []
+      responses:
+        '200':
+          description: Leaderboard
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        rank:
+                          type: integer
+                        tier:
+                          type: string
+                        txCount:
+                          type: integer
+                        anonymousId:
+                          type: string
+
+  /api/rewards/{party}:
+    get:
+      tags: [Rewards]
+      summary: Get reward stats and tier for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Reward stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/RewardStats'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/rewards/{party}/history:
+    get:
+      tags: [Rewards]
+      summary: Get reward payout history
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Payout history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+
+  /api/rewards/referral:
+    post:
+      tags: [Rewards]
+      summary: Create a referral
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [referrer, referee]
+              properties:
+                referrer:
+                  type: string
+                referee:
+                  type: string
+                referrerBonusPct:
+                  type: number
+                  default: 10
+      responses:
+        '201':
+          description: Referral created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/rewards/{party}/referrals:
+    get:
+      tags: [Rewards]
+      summary: List referrals for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Referrals list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+
+  # =========================================================================
+  # Market
+  # =========================================================================
+
+  /api/market/prices:
+    get:
+      tags: [Market]
+      summary: Get current prices of all supported assets
+      security: []
+      responses:
+        '200':
+          description: Price data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      prices:
+                        $ref: '#/components/schemas/PriceData'
+                      timestamp:
+                        type: string
+                        format: date-time
+
+  /api/market/pools:
+    get:
+      tags: [Market]
+      summary: Get Cantex liquidity pool information
+      security: []
+      responses:
+        '200':
+          description: Pool info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      pools:
+                        type: object
+                      timestamp:
+                        type: string
+                        format: date-time
+
+  /api/market/history/{asset}:
+    get:
+      tags: [Market]
+      summary: Get price history for an asset
+      parameters:
+        - name: asset
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: hours
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 168
+            default: 24
+      responses:
+        '200':
+          description: Price history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      asset:
+                        type: string
+                      hours:
+                        type: integer
+                      points:
+                        type: array
+                        items:
+                          type: object
+                      count:
+                        type: integer
+        '400':
+          description: Invalid hours range
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/market/convert:
+    get:
+      tags: [Market]
+      summary: Convert amount between two assets
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Conversion result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      from:
+                        type: string
+                      to:
+                        type: string
+                      inputAmount:
+                        type: number
+                      outputAmount:
+                        type: number
+                      timestamp:
+                        type: string
+                        format: date-time
+        '400':
+          description: Missing or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/market/quote:
+    get:
+      tags: [Market]
+      summary: Get a swap quote from Cantex
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Quote result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/market/best-quote:
+    get:
+      tags: [Market]
+      summary: Get best quote across all DEXes (smart router)
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: Best quote
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/market/compare-quotes:
+    get:
+      tags: [Market]
+      summary: Compare quotes from all DEXes
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: amount
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        '200':
+          description: All quotes
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+        '400':
+          description: Missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/market/dexes:
+    get:
+      tags: [Market]
+      summary: List available DEXes and their status
+      security: []
+      responses:
+        '200':
+          description: DEX list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+
+  /api/market/network:
+    get:
+      tags: [Market]
+      summary: Canton Network stats from Scan API
+      security: []
+      responses:
+        '200':
+          description: Network stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      openRounds:
+                        type: array
+                        items:
+                          type: object
+                      featuredApps:
+                        type: array
+                        items:
+                          type: object
+                      network:
+                        type: string
+
+  /api/market/orderbook:
+    get:
+      tags: [Market]
+      summary: Get Temple DEX orderbook depth
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Orderbook data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Missing parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =========================================================================
+  # Transfers
+  # =========================================================================
+
+  /api/transfers/{party}/holdings:
+    get:
+      tags: [Transfers]
+      summary: Get token holdings for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Holdings data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      party:
+                        type: string
+                      holdings:
+                        type: array
+                        items:
+                          type: object
+                      totalAssets:
+                        type: integer
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transfers/swap:
+    post:
+      tags: [Transfers]
+      summary: Execute a token swap via Cantex
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [user, sellAsset, sellAmount, buyAsset, expectedBuyAmount]
+              properties:
+                user:
+                  type: string
+                sellAsset:
+                  type: string
+                sellAmount:
+                  type: number
+                buyAsset:
+                  type: string
+                expectedBuyAmount:
+                  type: number
+      responses:
+        '201':
+          description: Swap executed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transfers/send:
+    post:
+      tags: [Transfers]
+      summary: Initiate a direct token transfer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sender, receiver, instrumentId, amount]
+              properties:
+                sender:
+                  type: string
+                receiver:
+                  type: string
+                instrumentId:
+                  type: string
+                amount:
+                  type: number
+                memo:
+                  type: string
+                  default: ""
+      responses:
+        '201':
+          description: Transfer initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/transfers/{party}/export:
+    get:
+      tags: [Transfers]
+      summary: Export transfer history as CSV
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: CSV file
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  /api/transfers/{party}/history:
+    get:
+      tags: [Transfers]
+      summary: Get combined transfer and swap history
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Transfer history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      party:
+                        type: string
+                      entries:
+                        type: array
+                        items:
+                          type: object
+                      totalEntries:
+                        type: integer
+
+  /api/transfers/{party}/pending:
+    get:
+      tags: [Transfers]
+      summary: Get pending transfers and swaps
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Pending transactions
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: object
+                    properties:
+                      party:
+                        type: string
+                      transfers:
+                        type: array
+                        items:
+                          type: object
+                      swaps:
+                        type: array
+                        items:
+                          type: object
+
+  # =========================================================================
+  # Compound
+  # =========================================================================
+
+  /api/compound/{party}/yields:
+    get:
+      tags: [Compound]
+      summary: Get yield summary for a party
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Yield summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/compound/{party}/projected:
+    get:
+      tags: [Compound]
+      summary: Get projected yield sources
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Projected yields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+
+  /api/compound/{party}/execute:
+    post:
+      tags: [Compound]
+      summary: Trigger manual compound
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compound result (null if no yield available)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/compound/{party}/history:
+    get:
+      tags: [Compound]
+      summary: Get compound execution history
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compound history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      type: object
+
+  /api/compound/{party}/config:
+    get:
+      tags: [Compound]
+      summary: Get compound configuration
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Compound config
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/CompoundConfig'
+    put:
+      tags: [Compound]
+      summary: Update compound configuration
+      parameters:
+        - name: party
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CompoundConfig'
+      responses:
+        '200':
+          description: Config updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =========================================================================
+  # Admin
+  # =========================================================================
+
+  /api/admin/status:
+    get:
+      tags: [Admin]
+      summary: Get platform status
+      description: Returns current admin state including pause/freeze status, fee rate, and allowed assets.
+      responses:
+        '200':
+          description: Platform status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    $ref: '#/components/schemas/AdminStatus'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/pause:
+    post:
+      tags: [Admin]
+      summary: Pause all rebalancing and DCA globally
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  example: "Scheduled maintenance"
+      responses:
+        '200':
+          description: Platform paused
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/resume:
+    post:
+      tags: [Admin]
+      summary: Resume all operations
+      responses:
+        '200':
+          description: Platform resumed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/fee-rate:
+    put:
+      tags: [Admin]
+      summary: Update platform fee rate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [feeRate]
+              properties:
+                feeRate:
+                  type: number
+                  minimum: 0
+                  maximum: 0.1
+                  example: 0.001
+      responses:
+        '200':
+          description: Fee rate updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Invalid fee rate
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/allowed-assets:
+    put:
+      tags: [Admin]
+      summary: Update allowed asset list
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [assets]
+              properties:
+                assets:
+                  type: array
+                  items:
+                    type: string
+                  example: ["CC", "USDCx", "CBTC", "ETHx"]
+      responses:
+        '200':
+          description: Allowed assets updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          description: Validation error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/emergency-freeze:
+    post:
+      tags: [Admin]
+      summary: Emergency freeze all portfolios
+      description: |
+        Immediately freezes all portfolio operations. This is a safety measure
+        that pauses all rebalancing, DCA execution, and compounding.
+        Requires manual resume via /api/admin/resume.
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason:
+                  type: string
+                  example: "Security incident detected"
+      responses:
+        '200':
+          description: Platform frozen
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /api/admin/audit-log:
+    get:
+      tags: [Admin]
+      summary: Get recent admin actions
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 500
+      responses:
+        '200':
+          description: Audit log entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/AuditLogEntry'
+        '403':
+          description: Not an admin party
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  # =========================================================================
+  # System
+  # =========================================================================
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: All systems healthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+        '503':
+          description: Degraded — one or more dependencies unhealthy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthCheck'
+
+  /readyz:
+    get:
+      tags: [System]
+      summary: Readiness probe
+      security: []
+      responses:
+        '200':
+          description: Ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+        '503':
+          description: Not ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ready:
+                    type: boolean
+
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics
+      security: []
+      responses:
+        '200':
+          description: Prometheus text exposition format
+          content:
+            text/plain:
+              schema:
+                type: string
+
+  /metrics/json:
+    get:
+      tags: [System]
+      summary: Metrics in JSON format
+      security: []
+      responses:
+        '200':
+          description: JSON metrics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/openapi.yaml:
+    get:
+      tags: [System]
+      summary: OpenAPI specification
+      security: []
+      responses:
+        '200':
+          description: OpenAPI 3.0 specification in YAML
+          content:
+            text/yaml:
+              schema:
+                type: string

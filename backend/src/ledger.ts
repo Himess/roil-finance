@@ -1,6 +1,6 @@
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import { config } from './config.js';
+import { config, TOKEN_STANDARD } from './config.js';
 import { withRetry } from './utils/retry.js';
 import { ledgerBreaker } from './utils/circuit-breaker.js';
 import { LedgerError } from './utils/errors.js';
@@ -441,6 +441,94 @@ export class DamlLedger {
 
   /** Query — already takes single party, re-export for clarity */
   // query() method already defined above with single party
+
+  // -----------------------------------------------------------------------
+  // Package hash resolution
+  // -----------------------------------------------------------------------
+
+  private _cachedPackageHash: string | null = null;
+
+  /**
+   * Resolve the roil-finance package hash by querying /v2/packages.
+   * Caches the result after the first successful resolution.
+   *
+   * On localnet, returns null (package-name references work natively).
+   * On devnet/testnet/mainnet, the JSON API requires the full hash.
+   */
+  async resolvePackageHash(packageName?: string): Promise<string | null> {
+    if (this._cachedPackageHash) return this._cachedPackageHash;
+    if (config.network === 'localnet') return null;
+
+    const targetName = packageName ?? config.damlPackageName;
+
+    try {
+      const packageIds = await this.listPackages([config.platformParty]);
+
+      for (const pid of packageIds) {
+        try {
+          const meta = await this.get<{ name?: string; packageName?: string }>(
+            `/v2/packages/${pid}`,
+            [config.platformParty],
+          );
+
+          if (meta.name === targetName || meta.packageName === targetName) {
+            this._cachedPackageHash = pid;
+            return pid;
+          }
+        } catch {
+          // Skip this package
+        }
+      }
+
+      // Single non-system package heuristic
+      if (packageIds.length === 1) {
+        this._cachedPackageHash = packageIds[0];
+        return packageIds[0];
+      }
+    } catch {
+      // Network error — return null
+    }
+
+    return null;
+  }
+
+  /** Clear cached package hash (for testing or re-resolution). */
+  resetPackageHashCache(): void {
+    this._cachedPackageHash = null;
+  }
+
+  // -----------------------------------------------------------------------
+  // Party balance (fee budget checking)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Get a party's balance for a specific asset.
+   *
+   * Queries CIP-0056 Holding contracts and sums amounts matching the
+   * given asset symbol. Useful for fee budget checking before executing
+   * transactions.
+   */
+  async getPartyBalance(party: string, asset: string): Promise<number> {
+    try {
+      const holdings = await this.query<{
+        owner: string;
+        instrument: { id: string; admin: string };
+        amount: string;
+      }>(TOKEN_STANDARD.Holding, party);
+
+      let total = 0;
+      for (const h of holdings) {
+        const payload = h.payload;
+        if (payload?.instrument?.id === asset && payload?.owner === party) {
+          total += parseFloat(payload.amount || '0');
+        }
+      }
+
+      return total;
+    } catch {
+      return 0;
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

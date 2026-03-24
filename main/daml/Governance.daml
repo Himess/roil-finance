@@ -1,0 +1,162 @@
+-- | Governance and admin controls for Roil Finance — Canton Network aligned.
+-- Provides platform-level configuration and emergency controls.
+--
+-- The RoilAdmin contract is the single source of truth for platform-wide
+-- settings. All portfolio and DCA operations should check these settings
+-- (via the backend) before proceeding.
+module Governance where
+
+import Types
+import DA.Time
+
+-- | Platform-wide admin configuration.
+-- One RoilAdmin contract per platform party.
+-- Controls fee rates, allowed assets, pause state, and emergency freeze.
+template RoilAdmin
+  with
+    platform          : Party
+    isPaused          : Bool          -- global rebalancing pause
+    allowedAssets     : [AssetId]     -- whitelist of tradeable assets
+    rebalanceFeePct   : Decimal       -- fee percentage on rebalance operations (0.0-100.0)
+    minPortfolioValue : Decimal       -- minimum portfolio value in CC to allow rebalancing
+    isFrozen          : Bool          -- emergency freeze (blocks ALL operations)
+    updatedAt         : Time
+  where
+    signatory platform
+
+    key platform : Party
+    maintainer key
+
+    ensure rebalanceFeePct >= 0.0 && rebalanceFeePct <= 100.0
+      && minPortfolioValue >= 0.0
+      && not (null allowedAssets)
+
+    -- Pause all rebalancing operations globally.
+    -- Does not affect DCA or other operations — only rebalancing.
+    choice PauseAllRebalancing : ContractId RoilAdmin
+      with
+        pausedAt : Time
+      controller platform
+      do
+        assertMsg "Already paused" (not isPaused)
+        assertMsg "Cannot pause while frozen" (not isFrozen)
+        create this with
+          isPaused = True
+          updatedAt = pausedAt
+
+    -- Resume rebalancing operations.
+    choice ResumeRebalancing : ContractId RoilAdmin
+      with
+        resumedAt : Time
+      controller platform
+      do
+        assertMsg "Not currently paused" isPaused
+        assertMsg "Cannot resume while frozen" (not isFrozen)
+        create this with
+          isPaused = False
+          updatedAt = resumedAt
+
+    -- Update the rebalance fee rate.
+    choice UpdateFeeRate : ContractId RoilAdmin
+      with
+        newFeePct : Decimal
+        changedAt : Time
+      controller platform
+      do
+        assertMsg "Fee must be between 0 and 100" (newFeePct >= 0.0 && newFeePct <= 100.0)
+        assertMsg "Cannot update while frozen" (not isFrozen)
+        create this with
+          rebalanceFeePct = newFeePct
+          updatedAt = changedAt
+
+    -- Update the whitelist of allowed assets.
+    choice UpdateAllowedAssets : ContractId RoilAdmin
+      with
+        newAllowedAssets : [AssetId]
+        changedAt        : Time
+      controller platform
+      do
+        assertMsg "Must have at least one allowed asset" (not (null newAllowedAssets))
+        assertMsg "Cannot update while frozen" (not isFrozen)
+        create this with
+          allowedAssets = newAllowedAssets
+          updatedAt = changedAt
+
+    -- Emergency freeze — blocks ALL platform operations.
+    -- Only use in case of critical security incident.
+    -- Once frozen, only Unfreeze can restore operations.
+    choice EmergencyFreeze : ContractId RoilAdmin
+      with
+        frozenAt : Time
+        reason   : Text
+      controller platform
+      do
+        assertMsg "Already frozen" (not isFrozen)
+        assertMsg "Reason must be provided" (reason /= "")
+        -- Create an audit record of the freeze
+        _ <- create GovernanceAuditLog with
+          platform
+          action = "EMERGENCY_FREEZE"
+          reason
+          timestamp = frozenAt
+        create this with
+          isFrozen = True
+          isPaused = True  -- also pause rebalancing
+          updatedAt = frozenAt
+
+    -- Unfreeze after emergency is resolved.
+    choice Unfreeze : ContractId RoilAdmin
+      with
+        unfrozenAt : Time
+        reason     : Text
+      controller platform
+      do
+        assertMsg "Not currently frozen" isFrozen
+        assertMsg "Reason must be provided" (reason /= "")
+        _ <- create GovernanceAuditLog with
+          platform
+          action = "UNFREEZE"
+          reason
+          timestamp = unfrozenAt
+        create this with
+          isFrozen = False
+          isPaused = False
+          updatedAt = unfrozenAt
+
+    -- Update minimum portfolio value threshold.
+    choice UpdateMinPortfolioValue : ContractId RoilAdmin
+      with
+        newMinValue : Decimal
+        changedAt   : Time
+      controller platform
+      do
+        assertMsg "Min value must be non-negative" (newMinValue >= 0.0)
+        assertMsg "Cannot update while frozen" (not isFrozen)
+        create this with
+          minPortfolioValue = newMinValue
+          updatedAt = changedAt
+
+    -- Non-consuming check: is a given asset allowed?
+    nonconsuming choice IsAssetAllowed : Bool
+      with
+        asset : AssetId
+      controller platform
+      do
+        pure (any (\a -> a == asset) allowedAssets)
+
+    -- Non-consuming check: can rebalancing proceed?
+    nonconsuming choice CanRebalance : Bool
+      controller platform
+      do
+        pure (not isPaused && not isFrozen)
+
+-- | Immutable audit log for governance actions.
+-- Every admin action creates a permanent record.
+template GovernanceAuditLog
+  with
+    platform  : Party
+    action    : Text     -- e.g., "EMERGENCY_FREEZE", "UNFREEZE", "FEE_UPDATE"
+    reason    : Text
+    timestamp : Time
+  where
+    signatory platform

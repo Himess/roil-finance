@@ -117,7 +117,7 @@ portfolioRouter.get('/:party/performance', requireParty('party'), async (req, re
     const { party } = req.params as Record<string, string>;
     const window = req.query.window as string | undefined;
     const summary = getPerformanceSummary(party!);
-    const history = getPerformance(party!, window as any);
+    const history = await getPerformance(party!, window as any);
     res.json({ success: true, data: { summary, history } });
   } catch (err: any) {
     res.status(500).json({ success: false, error: err.message });

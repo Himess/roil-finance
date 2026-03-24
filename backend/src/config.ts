@@ -12,24 +12,33 @@ const network = (process.env.CANTON_NETWORK || 'localnet') as NetworkEnv;
 // Per-network defaults
 // ---------------------------------------------------------------------------
 
-const NETWORK_DEFAULTS: Record<NetworkEnv, { jsonApiUrl: string; cantexApiUrl: string; scanUrl: string }> = {
+const NETWORK_DEFAULTS: Record<NetworkEnv, {
+  jsonApiUrl: string;
+  grpcApiUrl: string;
+  cantexApiUrl: string;
+  scanUrl: string;
+}> = {
   localnet: {
-    jsonApiUrl: 'http://localhost:3975',       // cn-quickstart app-provider
-    cantexApiUrl: 'http://localhost:6100',      // local cantex mock
+    jsonApiUrl: 'http://localhost:3975',                           // cn-quickstart app-provider
+    grpcApiUrl: 'http://localhost:3901',
+    cantexApiUrl: 'http://localhost:6100',                         // local cantex mock
     scanUrl: 'http://scan.localhost:4000',
   },
   devnet: {
-    jsonApiUrl: 'http://json-ledger-api.localhost:80',
+    jsonApiUrl: 'https://json-api.sv-1.devnet.sync.global',       // DevNet JSON API
+    grpcApiUrl: 'https://grpc-api.sv-1.devnet.sync.global',
     cantexApiUrl: 'https://api.devnet.cantex.io',
     scanUrl: 'https://scan.sv-1.devnet.sync.global',
   },
   testnet: {
-    jsonApiUrl: 'http://json-ledger-api.localhost:80',
+    jsonApiUrl: 'https://json-api.sv-1.testnet.sync.global',      // TestNet JSON API
+    grpcApiUrl: 'https://grpc-api.sv-1.testnet.sync.global',
     cantexApiUrl: 'https://api.testnet.cantex.io',
     scanUrl: 'https://scan.sv-1.testnet.sync.global',
   },
   mainnet: {
-    jsonApiUrl: 'http://json-ledger-api.localhost:80',
+    jsonApiUrl: 'https://json-api.sv-1.sync.global',              // MainNet JSON API
+    grpcApiUrl: 'https://grpc-api.sv-1.sync.global',
     cantexApiUrl: 'https://api.cantex.io',
     scanUrl: 'https://scan.sv-1.sync.global',
   },
@@ -52,7 +61,7 @@ export const config = {
   jsonApiUrl: process.env.JSON_API_URL || defaults.jsonApiUrl,
 
   /** Canton gRPC Ledger API (for advanced use) */
-  grpcApiUrl: process.env.GRPC_API_URL || 'http://localhost:3901', // Override for devnet/mainnet
+  grpcApiUrl: process.env.GRPC_API_URL || defaults.grpcApiUrl,
 
   /** Canton Scan API URL (for registry lookups) */
   scanUrl: process.env.SCAN_URL || defaults.scanUrl,
@@ -110,6 +119,10 @@ export const config = {
   templeApiUrl: process.env.TEMPLE_API_URL || 'https://app.templedigitalgroup.com/api',
   templeApiKey: process.env.TEMPLE_API_KEY || '',
 
+  // --- Database ---
+  /** PostgreSQL connection string. If not set, in-memory fallback is used. */
+  databaseUrl: process.env.DATABASE_URL || '',
+
   // --- Daml package reference ---
   /** Package name as uploaded to the ledger */
   damlPackageName: process.env.DAML_PACKAGE_NAME || 'roil-finance',
@@ -151,6 +164,107 @@ export const TEMPLATES = {
   PortfolioAuditLog: `#${pkg}:Portfolio:PortfolioAuditLog`,
   CompoundLog: `#${pkg}:Portfolio:CompoundLog`,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Dynamic template ID resolution
+// ---------------------------------------------------------------------------
+//
+// On localnet, #package-name:Module:Template works because the sandbox
+// resolves the package name automatically. On devnet/testnet/mainnet the
+// JSON Ledger API requires the full package hash. resolveTemplateIds()
+// queries /v2/packages to find the roil-finance package hash and rewrites
+// every template ID to use the qualified form: #<hash>:Module:Template.
+// ---------------------------------------------------------------------------
+
+let _resolvedPackageHash: string | null = null;
+
+/**
+ * Query the Ledger API for the roil-finance package hash.
+ * The result is cached after first successful resolution.
+ */
+export async function resolvePackageHash(jsonApiUrl?: string): Promise<string | null> {
+  if (_resolvedPackageHash) return _resolvedPackageHash;
+
+  // On localnet, package-name references work — no resolution needed.
+  if (config.network === 'localnet') return null;
+
+  const baseUrl = jsonApiUrl ?? config.jsonApiUrl;
+
+  try {
+    const res = await fetch(`${baseUrl}/v2/packages`, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!res.ok) return null;
+
+    const data = (await res.json()) as { packageIds?: string[] };
+    const packageIds = data.packageIds ?? [];
+
+    // The package list alone does not map names to IDs. We iterate
+    // through the returned IDs and query each one's metadata to match
+    // by name. Canton's /v2/packages/<id> returns { name, version }.
+    for (const pid of packageIds) {
+      try {
+        const metaRes = await fetch(`${baseUrl}/v2/packages/${pid}`, {
+          headers: { 'Content-Type': 'application/json' },
+        });
+        if (!metaRes.ok) continue;
+
+        const meta = (await metaRes.json()) as { name?: string; packageName?: string };
+        if (
+          meta.name === config.damlPackageName ||
+          meta.packageName === config.damlPackageName
+        ) {
+          _resolvedPackageHash = pid;
+          return pid;
+        }
+      } catch {
+        // Skip this package and try the next
+      }
+    }
+
+    // If name-based lookup did not work but there is only one non-system
+    // package, assume it is ours (common during early dev).
+    if (packageIds.length === 1) {
+      _resolvedPackageHash = packageIds[0];
+      return packageIds[0];
+    }
+  } catch {
+    // Network error — fall back to name-based IDs
+  }
+
+  return null;
+}
+
+/**
+ * Rewrite all TEMPLATES entries to use the resolved package hash.
+ * Safe to call multiple times (idempotent after first resolution).
+ * Returns the resolved hash or null if resolution was not needed/available.
+ */
+export async function resolveTemplateIds(): Promise<string | null> {
+  const hash = await resolvePackageHash();
+
+  if (!hash) return null;
+
+  // Rewrite each template ID from #<name>:Module:Template
+  // to #<hash>:Module:Template
+  const templates = TEMPLATES as Record<string, string>;
+  for (const key of Object.keys(templates)) {
+    const current = templates[key];
+    // Replace the package portion (between # and first :)
+    templates[key] = current.replace(
+      /^#[^:]+:/,
+      `#${hash}:`,
+    );
+  }
+
+  return hash;
+}
+
+/** Clear cached package hash (for testing). */
+export function _resetPackageHash(): void {
+  _resolvedPackageHash = null;
+}
 
 // ---------------------------------------------------------------------------
 // CIP-0056 Token Standard interfaces

@@ -5,6 +5,12 @@ import { smartRouter } from '../services/smart-router.js';
 import { featuredApp } from './featured-app.js';
 import { rewardsEngine } from './rewards.js';
 import { logger } from '../monitoring/logger.js';
+import {
+  decimalToNumber,
+  numberToDecimal,
+  decimalMul,
+} from '../utils/decimal.js';
+import { checkFeeBudget } from './rebalance.js';
 
 /** Platform fee rate applied to each swap output (e.g. 0.001 = 0.1%) */
 const PLATFORM_FEE_RATE = parseFloat(process.env.PLATFORM_FEE_RATE || '0.001');
@@ -193,11 +199,16 @@ export class DCAEngine {
         }
 
         logger.info(
-          `Executing DCA: ${payload.sourceAsset.symbol} → ${payload.targetAsset.symbol}, amount=${payload.amountPerBuy}, user=${payload.user}`,
+          `Executing DCA: ${payload.sourceAsset.symbol} -> ${payload.targetAsset.symbol}, amount=${payload.amountPerBuy}, user=${payload.user}`,
           { component: 'dca' },
         );
 
         try {
+          // 0. Fee budget check — ensure platform has enough CC for this DCA execution
+          // Estimate: 1 swap + 2 ledger commands (ExecuteDCA + CompleteDCAExecution)
+          const dcaCostEstimate = numberToDecimal(0.5 + 0.2); // 0.5 CC swap + 0.2 CC commands
+          await checkFeeBudget(dcaCostEstimate, `DCA ${payload.sourceAsset.symbol}->${payload.targetAsset.symbol} for ${payload.user}`);
+
           // 1. Exercise ExecuteDCA
           const execResult = await ledger.exerciseAs<[string, string]>(
             TEMPLATES.DCASchedule,
@@ -209,7 +220,9 @@ export class DCAEngine {
           const [_newScheduleCid, executionCid] = execResult;
 
           // 2. Execute swap via Smart Router (DEX aggregator)
-          const amount = Number(payload.amountPerBuy);
+          // Keep amountPerBuy as string from Daml, convert only for the swap call
+          const amountStr = payload.amountPerBuy;
+          const amount = decimalToNumber(amountStr);
           const swap = await smartRouter.executeSwap(
             payload.sourceAsset.symbol,
             payload.targetAsset.symbol,
@@ -217,24 +230,28 @@ export class DCAEngine {
           );
 
           logger.info(
-            `[dca] Swap executed via ${swap.source}: ${payload.sourceAsset.symbol} → ${payload.targetAsset.symbol}`,
+            `[dca] Swap executed via ${swap.source}: ${payload.sourceAsset.symbol} -> ${payload.targetAsset.symbol}`,
             { ...swap },
           );
 
-          // 2b. Deduct platform fee from swap output
-          const platformFee = swap.outputAmount * PLATFORM_FEE_RATE;
+          // 2b. Deduct platform fee from swap output — keep as string for Daml
+          const outputStr = numberToDecimal(swap.outputAmount);
+          const feeRateStr = numberToDecimal(PLATFORM_FEE_RATE);
+          const platformFeeStr = decimalMul(outputStr, feeRateStr);
+          const platformFee = decimalToNumber(platformFeeStr);
           const netOutputAmount = swap.outputAmount - platformFee;
+          const netOutputStr = numberToDecimal(netOutputAmount);
           logger.info(
-            `[dca] Platform fee: ${platformFee.toFixed(6)} ${payload.targetAsset.symbol} (${(PLATFORM_FEE_RATE * 100).toFixed(2)}% of ${swap.outputAmount.toFixed(6)})`,
+            `[dca] Platform fee: ${platformFeeStr} ${payload.targetAsset.symbol} (${(PLATFORM_FEE_RATE * 100).toFixed(2)}% of ${outputStr})`,
           );
 
-          // 3. Complete execution on ledger
+          // 3. Complete execution on ledger — use numberToDecimal for Daml Decimal precision
           await ledger.exerciseAs(
             TEMPLATES.DCAExecution,
             executionCid,
             'CompleteDCAExecution',
             {
-              receivedAmount: String(netOutputAmount),
+              receivedAmount: netOutputStr,
               completedAt: new Date().toISOString(),
             },
             platform,
@@ -244,7 +261,7 @@ export class DCAEngine {
           lastExecutionCache.set(key, Date.now());
 
           logger.info(
-            `Completed via ${swap.source}: ${swap.inputAmount} ${payload.sourceAsset.symbol} → ${netOutputAmount.toFixed(6)} ${payload.targetAsset.symbol} (fee: ${platformFee.toFixed(6)})`,
+            `Completed via ${swap.source}: ${swap.inputAmount} ${payload.sourceAsset.symbol} -> ${netOutputStr} ${payload.targetAsset.symbol} (fee: ${platformFeeStr})`,
             { component: 'dca' },
           );
 
@@ -253,7 +270,7 @@ export class DCAEngine {
             await featuredApp.recordActivity(
               payload.user,
               'DCAExecution',
-              `DCA: ${swap.inputAmount} ${payload.sourceAsset.symbol} -> ${swap.outputAmount.toFixed(6)} ${payload.targetAsset.symbol}`,
+              `DCA: ${swap.inputAmount} ${payload.sourceAsset.symbol} -> ${numberToDecimal(swap.outputAmount)} ${payload.targetAsset.symbol}`,
             );
           } catch {
             // Best effort — don't fail the DCA for activity recording
@@ -321,7 +338,7 @@ export class DCAEngine {
       scheduleId: schedule.contractId,
       sourceAsset: payload.sourceAsset.symbol,
       targetAsset: payload.targetAsset.symbol,
-      amountPerBuy: Number(payload.amountPerBuy),
+      amountPerBuy: decimalToNumber(payload.amountPerBuy),
       frequency: freq,
       totalExecutions: payload.totalExecutions,
       isActive: payload.isActive,
@@ -366,7 +383,7 @@ export class DCAEngine {
         scheduleId: s.contractId,
         sourceAsset: payload.sourceAsset.symbol,
         targetAsset: payload.targetAsset.symbol,
-        amountPerBuy: Number(payload.amountPerBuy),
+        amountPerBuy: decimalToNumber(payload.amountPerBuy),
         frequency: freq,
         totalExecutions: payload.totalExecutions,
         isActive: payload.isActive,
@@ -387,6 +404,137 @@ export class DCAEngine {
       .map((l) => l.payload)
       .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }
+}
+
+// ---------------------------------------------------------------------------
+// Trigger integration
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle a DCA schedule event from TriggerManager.
+ * Instead of scanning all schedules, processes a single event-driven schedule.
+ *
+ * The TriggerManager detects new/changed DCASchedule contracts and routes
+ * them here. This avoids the O(n) scan of all schedules on every cron tick.
+ */
+export async function handleDCAScheduleEvent(
+  schedule: { contractId: string; payload: DCASchedulePayload },
+): Promise<{ executed: boolean; error?: string }> {
+  const { payload } = schedule;
+  if (!payload.isActive) return { executed: false };
+
+  const platform = config.platformParty;
+  const key = scheduleKey(payload.user, payload.sourceAsset.symbol, payload.targetAsset.symbol);
+
+  // Determine last execution time from cache or ledger
+  let lastExecution: string | null = null;
+  const cachedTs = lastExecutionCache.get(key);
+  if (cachedTs) {
+    lastExecution = new Date(cachedTs).toISOString();
+  } else {
+    // Cold cache — query ledger for this specific schedule's logs
+    try {
+      const logs = await ledger.query<DCALogPayload>(TEMPLATES.DCALog, platform);
+      const relevantLogs = logs
+        .filter(
+          l =>
+            l.payload.user === payload.user &&
+            l.payload.sourceAsset.symbol === payload.sourceAsset.symbol &&
+            l.payload.targetAsset.symbol === payload.targetAsset.symbol,
+        )
+        .sort((a, b) => new Date(b.payload.timestamp).getTime() - new Date(a.payload.timestamp).getTime());
+
+      if (relevantLogs.length > 0) {
+        const ts = new Date(relevantLogs[0].payload.timestamp).getTime();
+        lastExecutionCache.set(key, ts);
+        lastExecution = relevantLogs[0].payload.timestamp;
+      }
+    } catch {
+      // Proceed with null (will treat as never executed)
+    }
+  }
+
+  if (!isDue(payload, lastExecution)) {
+    return { executed: false };
+  }
+
+  logger.info(
+    `[dca] Event-driven execution: ${payload.sourceAsset.symbol} -> ${payload.targetAsset.symbol}, user=${payload.user}`,
+    { component: 'dca-trigger' },
+  );
+
+  try {
+    // Exercise ExecuteDCA
+    const execResult = await ledger.exerciseAs<[string, string]>(
+      TEMPLATES.DCASchedule,
+      schedule.contractId,
+      'ExecuteDCA',
+      {},
+      platform,
+    );
+    const [_newScheduleCid, executionCid] = execResult;
+
+    // Execute swap
+    const amount = Number(payload.amountPerBuy);
+    const swap = await smartRouter.executeSwap(
+      payload.sourceAsset.symbol,
+      payload.targetAsset.symbol,
+      amount,
+    );
+
+    // Deduct platform fee
+    const platformFee = swap.outputAmount * PLATFORM_FEE_RATE;
+    const netOutputAmount = swap.outputAmount - platformFee;
+
+    // Complete execution on ledger
+    await ledger.exerciseAs(
+      TEMPLATES.DCAExecution,
+      executionCid,
+      'CompleteDCAExecution',
+      {
+        receivedAmount: String(netOutputAmount),
+        completedAt: new Date().toISOString(),
+      },
+      platform,
+    );
+
+    // Update cache with ledger offset tracking
+    lastExecutionCache.set(key, Date.now());
+
+    // Record activity and rewards (best effort)
+    try {
+      await featuredApp.recordActivity(
+        payload.user,
+        'DCAExecution',
+        `DCA: ${swap.inputAmount} ${payload.sourceAsset.symbol} -> ${netOutputAmount.toFixed(6)} ${payload.targetAsset.symbol}`,
+      );
+    } catch {
+      // Best effort
+    }
+
+    try {
+      await rewardsEngine.recordTransaction(payload.user, amount);
+    } catch {
+      // Best effort
+    }
+
+    return { executed: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(`[dca] Event-driven execution failed: ${message}`, {
+      component: 'dca-trigger',
+      user: payload.user,
+    });
+    return { executed: false, error: message };
+  }
+}
+
+/**
+ * Get the last execution timestamp for a schedule key (used by TriggerManager).
+ */
+export function getLastExecutionTimestamp(user: string, source: string, target: string): number | null {
+  const key = scheduleKey(user, source, target);
+  return lastExecutionCache.get(key) ?? null;
 }
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,148 @@
+-- | Transfer pre-approval pattern for Roil Finance — Canton Network aligned.
+-- Enables auto-accept transfers between parties up to a configurable limit.
+--
+-- This pattern is common in Canton Network applications where a receiver
+-- wants to pre-authorize transfers from a specific sender (e.g., the
+-- platform rebalancer) without requiring manual approval each time.
+--
+-- Usage:
+-- 1. Sender and receiver both sign a TransferPreapproval contract.
+-- 2. The sender can execute transfers up to maxAmountPerTransfer.
+-- 3. Each transfer is logged immutably.
+-- 4. The receiver can revoke or update limits at any time.
+module TransferPreapproval where
+
+import DA.Time
+
+-- | Result of ExecutePreapprovedTransfer choice
+data ExecutePreapprovedTransfer_Result = ExecutePreapprovedTransfer_Result
+  with
+    preapprovalCid : ContractId TransferPreapproval
+    logCid         : ContractId PreapprovedTransferLog
+  deriving (Eq, Show)
+
+-- | Pre-approval for automatic transfers between two parties.
+-- Both sender and receiver are signatories (mutual agreement).
+-- The receiver can revoke at any time.
+template TransferPreapproval
+  with
+    sender               : Party
+    receiver             : Party
+    instrumentId         : Text       -- token instrument being pre-approved
+    maxAmountPerTransfer : Decimal    -- maximum amount per single transfer
+    expiresAt            : Time       -- pre-approval expiration time
+    isActive             : Bool       -- can be deactivated without archiving
+    totalTransferred     : Decimal    -- cumulative amount transferred
+    totalTransferCount   : Int        -- number of transfers executed
+    createdAt            : Time
+  where
+    signatory sender, receiver
+    ensure maxAmountPerTransfer > 0.0
+
+    key (sender, receiver, instrumentId) : (Party, Party, Text)
+    maintainer key._1
+
+    -- Execute a pre-approved transfer.
+    -- Validates: amount within limit, not expired, is active.
+    -- Creates an immutable log entry and updates running totals.
+    choice ExecutePreapprovedTransfer : ExecutePreapprovedTransfer_Result
+      with
+        amount    : Decimal
+        memo      : Text
+        executedAt : Time
+      controller sender
+      do
+        assertMsg "Pre-approval is not active" isActive
+        assertMsg "Pre-approval has expired" (executedAt <= expiresAt)
+        assertMsg "Amount must be positive" (amount > 0.0)
+        assertMsg "Amount exceeds maximum per transfer" (amount <= maxAmountPerTransfer)
+
+        -- Create immutable transfer log
+        logCid <- create PreapprovedTransferLog with
+          sender
+          receiver
+          instrumentId
+          amount
+          memo
+          executedAt
+
+        -- Update running totals
+        preapprovalCid <- create this with
+          totalTransferred = totalTransferred + amount
+          totalTransferCount = totalTransferCount + 1
+
+        pure ExecutePreapprovedTransfer_Result with ..
+
+    -- Receiver revokes the pre-approval (archives the contract).
+    choice RevokePreapproval : ()
+      controller receiver
+      do pure ()
+
+    -- Sender can also revoke (mutual opt-out).
+    choice SenderRevokePreapproval : ()
+      controller sender
+      do pure ()
+
+    -- Receiver updates the maximum amount per transfer.
+    choice UpdateLimit : ContractId TransferPreapproval
+      with
+        newMaxAmount : Decimal
+        updatedAt    : Time
+      controller receiver
+      do
+        assertMsg "New max amount must be positive" (newMaxAmount > 0.0)
+        assertMsg "Pre-approval has expired" (updatedAt <= expiresAt)
+        create this with
+          maxAmountPerTransfer = newMaxAmount
+
+    -- Receiver extends or changes the expiration.
+    choice UpdateExpiry : ContractId TransferPreapproval
+      with
+        newExpiresAt : Time
+        updatedAt    : Time
+      controller receiver
+      do
+        assertMsg "New expiry must be in the future" (newExpiresAt > updatedAt)
+        create this with
+          expiresAt = newExpiresAt
+
+    -- Receiver deactivates pre-approval without archiving.
+    -- Preserves the contract for audit but blocks new transfers.
+    choice DeactivatePreapproval : ContractId TransferPreapproval
+      controller receiver
+      do
+        assertMsg "Already inactive" isActive
+        create this with isActive = False
+
+    -- Receiver reactivates a previously deactivated pre-approval.
+    choice ReactivatePreapproval : ContractId TransferPreapproval
+      with
+        reactivatedAt : Time
+      controller receiver
+      do
+        assertMsg "Already active" (not isActive)
+        assertMsg "Pre-approval has expired" (reactivatedAt <= expiresAt)
+        create this with isActive = True
+
+    -- Non-consuming check: can a transfer of given amount proceed?
+    nonconsuming choice CanTransfer : Bool
+      with
+        amount   : Decimal
+        checkAt  : Time
+      controller sender
+      do
+        pure (isActive && checkAt <= expiresAt && amount > 0.0 && amount <= maxAmountPerTransfer)
+
+-- | Immutable log of a pre-approved transfer execution.
+-- Provides full audit trail for all auto-accepted transfers.
+template PreapprovedTransferLog
+  with
+    sender       : Party
+    receiver     : Party
+    instrumentId : Text
+    amount       : Decimal
+    memo         : Text
+    executedAt   : Time
+  where
+    signatory sender
+    observer receiver

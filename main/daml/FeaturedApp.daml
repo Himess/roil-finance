@@ -1,10 +1,17 @@
--- | Canton Featured App Rewards integration
+-- | Canton Featured App Rewards integration — Canton Network aligned.
 -- Records platform activity for the Canton Network App Rewards program.
--- On the real Canton Network, this would exercise
--- FeaturedAppRight_CreateActivityMarker from splice-api-featured-app-v1
--- to generate AppRewardCoupons. For now, we record locally and the
--- integration points are clearly marked.
+--
+-- On the real Canton Network with Splice DARs available, this module would:
+-- 1. Hold a FeaturedAppRight contract (obtained from GSF registration)
+-- 2. Exercise FeaturedAppRight_CreateActivityMarker on each activity
+-- 3. Automatically generate AppRewardCoupons via Super Validator automation
+--
+-- Without Splice DARs, activity is recorded locally via ActivityMarker
+-- contracts that mirror the on-network data model. The backend can query
+-- these to report activity metrics and prepare for network integration.
 module FeaturedApp where
+
+import DA.Time
 
 -- | Activity types for reward tracking
 data ActivityType
@@ -14,66 +21,164 @@ data ActivityType
   | RewardDistribution
   deriving (Eq, Show)
 
--- | Activity record for featured app rewards
--- This template records platform activity for Canton App Rewards.
--- On the real network, this would exercise FeaturedAppRight_CreateActivityMarker
--- from splice-api-featured-app-v1. For now, we record locally and the
--- integration point is clearly marked.
+-- | Activity record for featured app rewards.
+-- This is the local equivalent of Splice's ActivityMarker.
+-- On the real network, each ActivityMarker triggers an AppRewardCoupon.
 template ActivityRecord
   with
-    platform : Party
-    user : Party
+    platform     : Party
+    user         : Party
     activityType : ActivityType
-    activityId : Text          -- unique ID for deduplication
-    description : Text
-    timestamp : Text
+    activityId   : Text          -- unique ID for deduplication
+    description  : Text
+    recordedAt   : Time
   where
     signatory platform
     observer user
 
--- | Platform-level featured app configuration
+-- | Activity marker — created by RecordActivity to mirror Splice's
+-- AppRewardCoupon creation pattern. Each marker represents one
+-- reward-eligible activity on the platform.
+template ActivityMarker
+  with
+    platform     : Party
+    provider     : Party          -- same as platform (app provider)
+    beneficiary  : Party          -- party receiving the reward (platform)
+    activityType : ActivityType
+    description  : Text
+    createdAt    : Time
+  where
+    signatory platform
+    observer beneficiary
+
+-- | Platform-level featured app configuration.
+-- Manages the connection to Canton Network's App Rewards system.
+--
+-- FeaturedAppRight reference:
+-- When registered with GSF and Splice DARs are available, the
+-- featuredAppRightCid field holds the actual ContractId of the
+-- FeaturedAppRight contract. Without DARs, it stores the CID as Text
+-- for reference and the module creates local ActivityMarker contracts.
 template FeaturedAppConfig
   with
-    platform : Party
-    appName : Text
-    isRegistered : Bool     -- true when registered with GSF
-    featuredAppRightCid : Optional Text  -- CID of FeaturedAppRight on real network
-    totalActivities : Int
+    platform            : Party
+    appName             : Text
+    isRegistered        : Bool          -- true when registered with GSF
+    featuredAppRightCid : Optional Text -- CID of FeaturedAppRight on real network
+    totalActivities     : Int
+    lastActivityAt      : Optional Time
   where
     signatory platform
 
-    -- Record an activity and optionally create activity marker
-    choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityRecord)
+    -- Record an activity and create an ActivityMarker.
+    -- On the real Canton Network with Splice DARs, this would exercise:
+    --   exerciseCmd (fromTextContractId featuredAppRightCid)
+    --     FeaturedAppRight_CreateActivityMarker with
+    --       provider = platform
+    --       activityMarkerDescription = description
+    -- Without DARs, we create a local ActivityMarker that mirrors the
+    -- on-network data model and can be queried for metrics.
+    choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
-        user : Party
+        user         : Party
         activityType : ActivityType
-        activityId : Text
-        description : Text
-        timestamp : Text
+        activityId   : Text
+        description  : Text
+        now          : Time
       controller platform
       do
-        -- INTEGRATION POINT: On real Canton Network, exercise:
-        -- FeaturedAppRight_CreateActivityMarker featuredAppRightCid
-        --   with beneficiary = platform
-        -- This creates an AppRewardCoupon automatically.
+        -- Update config with activity count
+        configCid <- create this with
+          totalActivities = totalActivities + 1
+          lastActivityAt = Some now
 
-        configCid <- create this with totalActivities = totalActivities + 1
-        activityCid <- create ActivityRecord with
-          platform; user; activityType; activityId; description; timestamp
+        -- Create local activity record for audit trail
+        _ <- create ActivityRecord with
+          platform; user; activityType; activityId; description
+          recordedAt = now
 
-        -- Canton Network Integration:
-        -- On devnet/mainnet, exercise FeaturedAppRight_CreateActivityMarker here:
-        -- exerciseCmd featuredAppRightCid FeaturedAppRight_CreateActivityMarker with
-        --   provider = platform
-        --   activityMarkerDescription = description
-        -- This creates an AppRewardCoupon automatically via Super Validator automation
+        -- Create ActivityMarker (local equivalent of AppRewardCoupon trigger).
+        -- On the real network, this would be replaced by:
+        --   case featuredAppRightCid of
+        --     Some cid -> do
+        --       exerciseCmd (fromTextContractId cid)
+        --         FeaturedAppRight_CreateActivityMarker with
+        --           provider = platform
+        --           activityMarkerDescription = description
+        --     None -> pure ()  -- not registered, skip reward generation
+        markerCid <- create ActivityMarker with
+          platform
+          provider = platform
+          beneficiary = platform
+          activityType
+          description
+          createdAt = now
 
-        pure (configCid, activityCid)
+        pure (configCid, markerCid)
+
+    -- Record a rebalance activity (convenience wrapper).
+    -- Called by the backend after Portfolio.CompleteRebalance succeeds.
+    choice RecordRebalanceActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
+      with
+        user        : Party
+        activityId  : Text
+        swapLegCount : Int
+        now         : Time
+      controller platform
+      do
+        let desc = "Portfolio rebalance: " <> show swapLegCount <> " swap legs executed"
+        exercise self RecordActivity with
+          user
+          activityType = Rebalance
+          activityId
+          description = desc
+          now
+
+    -- Record a DCA execution activity (convenience wrapper).
+    -- Called by the backend after DCAExecution.CompleteDCAExecution succeeds.
+    choice RecordDCAActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
+      with
+        user            : Party
+        activityId      : Text
+        executionNumber : Int
+        sourceSymbol    : Text
+        targetSymbol    : Text
+        sourceAmount    : Decimal
+        now             : Time
+      controller platform
+      do
+        let desc = "DCA #" <> show executionNumber <> ": "
+                   <> show sourceAmount <> " " <> sourceSymbol
+                   <> " -> " <> targetSymbol
+        exercise self RecordActivity with
+          user
+          activityType = DCAExecution
+          activityId
+          description = desc
+          now
+
+    -- Record a compound execution activity (convenience wrapper).
+    choice RecordCompoundActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
+      with
+        user             : Party
+        activityId       : Text
+        compoundedAmount : Decimal
+        strategy         : Text
+        now              : Time
+      controller platform
+      do
+        let desc = "Compound: " <> show compoundedAmount <> " CC via " <> strategy
+        exercise self RecordActivity with
+          user
+          activityType = CompoundExecution
+          activityId
+          description = desc
+          now
 
     -- Update registration status (after registering with GSF)
     choice UpdateRegistration : ContractId FeaturedAppConfig
       with
-        newIsRegistered : Bool
+        newIsRegistered        : Bool
         newFeaturedAppRightCid : Optional Text
       controller platform
       do

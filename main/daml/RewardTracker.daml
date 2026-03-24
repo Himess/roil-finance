@@ -1,12 +1,24 @@
--- | Reward tracking system for Roil
+-- | Reward tracking system for Roil Finance — Canton Network aligned.
 -- Tracks user activity (TX count) and assigns loyalty tiers.
 -- Higher tiers earn fee rebates, encouraging continued usage.
+--
+-- Contract key: (platform, user, monthId) — one tracker per user per month.
+-- Sub-threshold TXs are rejected with assertMsg (not silently ignored).
 module RewardTracker where
 
 import Types
+import DA.Time
 import DA.Optional (fromOptional)
 
--- | Per-user reward tracker — one per user per month
+-- | Result of DistributeReward choice
+data DistributeReward_Result = DistributeReward_Result
+  with
+    trackerCid : ContractId RewardTracker
+    payoutCid  : ContractId RewardPayout
+  deriving (Eq, Show)
+
+-- | Per-user reward tracker — one per user per month.
+-- Key: (platform, user, monthId) for efficient lookups.
 template RewardTracker
   with
     platform           : Party
@@ -22,17 +34,22 @@ template RewardTracker
     observer user
     ensure txCount >= 0 && consecutiveMonths >= 0 && totalRewardsEarned >= 0.0
 
-    -- Platform records a valid transaction
-    -- Called after each rebalance, DCA, or compound TX
+    key (platform, user, monthId) : (Party, Text, Text)
+    maintainer key._1
+
+    -- Platform records a valid transaction.
+    -- Called after each rebalance, DCA, or compound TX.
+    -- Sub-threshold TXs are REJECTED (not silently ignored) to prevent
+    -- spam and ensure callers handle the error explicitly.
     choice RecordTx : ContractId RewardTracker
       with
         txMinValue : Decimal   -- minimum value threshold (anti-spam)
         txValue    : Decimal   -- actual TX value
       controller platform
       do
-        -- Only count TXs above minimum threshold (anti-spam)
-        let validTx = if txValue >= txMinValue then 1 else 0
-        let newCount = txCount + validTx
+        assertMsg "TX value must be positive" (txValue > 0.0)
+        assertMsg "TX value below minimum threshold (anti-spam)" (txValue >= txMinValue)
+        let newCount = txCount + 1
         let computedTier = getTier newCount
         let carriedTier = fromOptional Bronze previousTier
         let newTier = max carriedTier computedTier
@@ -40,11 +57,13 @@ template RewardTracker
           txCount = newCount
           tier = newTier
 
-    -- Platform distributes monthly rewards based on tier
-    choice DistributeReward : (ContractId RewardTracker, ContractId RewardPayout)
+    -- Platform distributes monthly rewards based on tier.
+    -- Returns structured result with both contract IDs.
+    choice DistributeReward : DistributeReward_Result
       with
         rewardAmount : Decimal
         newMonthId   : Text
+        distributedAt : Time
       controller platform
       do
         assertMsg "Reward amount must be non-negative" (rewardAmount >= 0.0)
@@ -56,6 +75,7 @@ template RewardTracker
           tier
           monthId
           txCount
+          paidAt = distributedAt
 
         -- Roll over to new month tracker
         let newConsecutive =
@@ -73,7 +93,7 @@ template RewardTracker
           consecutiveMonths = newConsecutive
           totalRewardsEarned = totalRewardsEarned + rewardAmount
 
-        pure (trackerCid, payoutCid)
+        pure DistributeReward_Result with ..
 
     -- User views their current stats (nonconsuming)
     nonconsuming choice ViewStats : (Int, RewardTier, Int, Decimal)
@@ -90,11 +110,12 @@ template RewardPayout
     tier     : RewardTier
     monthId  : Text
     txCount  : Int
+    paidAt   : Time
   where
     signatory platform
     observer user
 
--- | Fee rebate schedule per tier
+-- | Fee rebate schedule per tier.
 -- Bronze:   0.5% fee back
 -- Silver:   1.0% fee back
 -- Gold:     2.0% fee back
@@ -113,6 +134,7 @@ template Referral
     referee  : Party       -- the new user
     isActive : Bool
     referrerBonusPct : Decimal   -- % of referee's TX rewards shared
+    createdAt : Time
   where
     signatory platform
     observer referrer, referee
@@ -123,7 +145,7 @@ template Referral
     nonconsuming choice CreditReferrer : ContractId ReferralCredit
       with
         refereeTxValue : Decimal
-        timestamp      : Text
+        creditedAt     : Time
       controller platform
       do
         assertMsg "Referral is not active" isActive
@@ -134,16 +156,16 @@ template Referral
           referrer
           referee
           amount = bonusAmount
-          timestamp
+          creditedAt
 
 -- | Record of referral bonus credit
 template ReferralCredit
   with
-    platform  : Party
-    referrer  : Party
-    referee   : Party
-    amount    : Decimal
-    timestamp : Text
+    platform   : Party
+    referrer   : Party
+    referee    : Party
+    amount     : Decimal
+    creditedAt : Time
   where
     signatory platform
     observer referrer

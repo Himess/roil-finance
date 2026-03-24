@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import express, { type Request, type Response, type NextFunction } from 'express';
 import cors from 'cors';
 import { config } from './config.js';
@@ -9,6 +12,7 @@ import { marketRouter } from './routes/market.js';
 import { compoundRouter } from './routes/compound.js';
 import { transfersRouter } from './routes/transfers.js';
 import { metricsRouter } from './routes/metrics.js';
+import { adminRouter } from './routes/admin.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
 // For multi-instance production deployment with Redis:
 // import { rateLimiter } from './middleware/rate-limiter.js';
@@ -18,6 +22,10 @@ import { logger } from './monitoring/logger.js';
 import { globalErrorHandler } from './middleware/error-handler.js';
 import { ledger } from './ledger.js';
 import { cantex } from './cantex.js';
+
+// Resolve directory of the current module (works for both src/ and dist/)
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ---------------------------------------------------------------------------
 // App factory
@@ -87,7 +95,28 @@ export function createApp(): express.Express {
   app.use('/api/market', marketRouter);
   app.use('/api/compound', compoundRouter);
   app.use('/api/transfers', transfersRouter);
+  app.use('/api/admin', adminRouter);
   app.use('/metrics', metricsRouter);
+
+  // Serve OpenAPI specification as raw YAML
+  app.get('/api/openapi.yaml', (_req, res) => {
+    try {
+      const specPath = join(__dirname, 'openapi.yaml');
+      const spec = readFileSync(specPath, 'utf-8');
+      res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
+      res.send(spec);
+    } catch {
+      // Fallback: try from src/ directory (dev mode with tsx)
+      try {
+        const specPath = join(__dirname, '..', 'src', 'openapi.yaml');
+        const spec = readFileSync(specPath, 'utf-8');
+        res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
+        res.send(spec);
+      } catch {
+        res.status(404).json({ success: false, error: 'OpenAPI spec not found' });
+      }
+    }
+  });
 
   // Health check
   app.get('/health', async (_req, res) => {

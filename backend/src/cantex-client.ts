@@ -4,8 +4,8 @@
  * Native TypeScript implementation of the Cantex REST API.
  * Replaces the Python subprocess bridge with direct HTTP calls.
  *
- * Auth: Ed25519 challenge-response → Bearer token
- * Swaps: secp256k1 intent signing → atomic on-chain settlement
+ * Auth: Ed25519 challenge-response -> Bearer token (auto-refreshed 60s before expiry)
+ * Swaps: secp256k1 intent signing -> atomic on-chain settlement
  *
  * API: https://api.cantex.io (mainnet) / https://api.testnet.cantex.io (testnet)
  * Docs: https://docs.cantex.io
@@ -17,6 +17,9 @@ import { withRetry } from './utils/retry.js';
 import { cantexBreaker } from './utils/circuit-breaker.js';
 import { CantexError } from './utils/errors.js';
 import { logger } from './monitoring/logger.js';
+
+/** How many seconds before token expiry to trigger a proactive refresh */
+const TOKEN_REFRESH_BUFFER_MS = 60_000; // 60 seconds
 
 // ---------------------------------------------------------------------------
 // Types
@@ -175,45 +178,98 @@ export class CantexRealClient {
   // Authentication
   // -----------------------------------------------------------------------
 
+  /**
+   * Authenticate with the Cantex API using Ed25519 challenge-response.
+   *
+   * Flow:
+   *   1. POST /v1/auth/api-key/begin  { publicKey }  -> { message, challengeId }
+   *   2. Sign `message` with Ed25519 operator key
+   *   3. POST /v1/auth/api-key/finish { challengeId, signature } -> { api_key, expires_in? }
+   *   4. Cache token, proactively refresh 60s before expiry
+   *
+   * The token is stored in `this.apiToken` and reused until it is within
+   * TOKEN_REFRESH_BUFFER_MS of expiry, at which point a fresh token is
+   * obtained transparently.
+   */
   private async authenticate(): Promise<string> {
-    // Return cached token if still valid
-    if (this.apiToken && Date.now() < this.tokenExpiresAt) {
+    // Return cached token if still valid (with 60s buffer)
+    if (this.apiToken && Date.now() < this.tokenExpiresAt - TOKEN_REFRESH_BUFFER_MS) {
       return this.apiToken;
     }
 
-    logger.info('Authenticating with Cantex API', { baseUrl: this.baseUrl });
+    // If we are within the refresh buffer but token is not yet expired,
+    // attempt a background refresh but return the current token if refresh fails
+    if (this.apiToken && Date.now() < this.tokenExpiresAt) {
+      try {
+        return await this.performAuthentication();
+      } catch (err) {
+        logger.warn('[Cantex] Proactive token refresh failed, using existing token', {
+          error: String(err),
+          expiresInMs: this.tokenExpiresAt - Date.now(),
+        });
+        return this.apiToken;
+      }
+    }
 
-    // Step 1: Begin challenge
+    // Token expired or never obtained — must authenticate
+    return this.performAuthentication();
+  }
+
+  /**
+   * Execute the Ed25519 challenge-response authentication flow.
+   */
+  private async performAuthentication(): Promise<string> {
+    logger.info('[Cantex] Authenticating with Cantex API', { baseUrl: this.baseUrl });
+
+    // Step 1: Begin challenge — send Ed25519 public key
     const pubKey = ed25519PublicKey(this.operatorKey);
     const beginRes = await fetch(`${this.baseUrl}/v1/auth/api-key/begin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publicKey: pubKey }),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!beginRes.ok) {
-      throw new CantexError(`Auth begin failed: ${await beginRes.text()}`);
+      const body = await beginRes.text();
+      throw new CantexError(`Auth begin failed (${beginRes.status}): ${body}`);
     }
 
-    const { message, challengeId } = await beginRes.json() as { message: string; challengeId: string };
+    const { message, challengeId } = await beginRes.json() as {
+      message: string;
+      challengeId: string;
+    };
 
-    // Step 2: Sign and finish
+    // Step 2: Sign the challenge with Ed25519 operator key
     const signature = ed25519Sign(message, this.operatorKey);
+
+    // Step 3: Complete challenge — exchange signature for Bearer token
     const finishRes = await fetch(`${this.baseUrl}/v1/auth/api-key/finish`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ challengeId, signature }),
+      signal: AbortSignal.timeout(10_000),
     });
 
     if (!finishRes.ok) {
-      throw new CantexError(`Auth finish failed: ${await finishRes.text()}`);
+      const body = await finishRes.text();
+      throw new CantexError(`Auth finish failed (${finishRes.status}): ${body}`);
     }
 
-    const { api_key } = await finishRes.json() as { api_key: string };
-    this.apiToken = api_key;
-    this.tokenExpiresAt = Date.now() + 3600_000; // 1 hour
-    logger.info('Cantex API authenticated');
-    return api_key;
+    const authResult = await finishRes.json() as {
+      api_key: string;
+      expires_in?: number; // seconds, if provided by the API
+    };
+
+    // Step 4: Cache token with expiry
+    this.apiToken = authResult.api_key;
+    const ttlMs = (authResult.expires_in ?? 3600) * 1000; // default 1 hour
+    this.tokenExpiresAt = Date.now() + ttlMs;
+
+    logger.info('[Cantex] Authenticated successfully', {
+      expiresInSeconds: Math.round(ttlMs / 1000),
+    });
+    return authResult.api_key;
   }
 
   // -----------------------------------------------------------------------
@@ -337,6 +393,16 @@ export class CantexRealClient {
   // Swap Execution (3-step: build → sign → submit)
   // -----------------------------------------------------------------------
 
+  /**
+   * Execute a swap on Cantex via the 3-step intent flow:
+   *
+   *   1. POST /v1/intent/build/pool/swap  -> { id, digest }
+   *      Builds the intent structure (from, to, amount, nonce) server-side.
+   *   2. Sign the returned `digest` with secp256k1 trading key.
+   *      This proves the trading key holder authorized this specific intent.
+   *   3. POST /v1/intent/submit { id, intentTradingKeySignature }
+   *      Submits the signed intent for on-chain settlement.
+   */
   async executeSwap(
     sellAmount: number,
     sellInstrumentId: string,
@@ -344,12 +410,13 @@ export class CantexRealClient {
     buyInstrumentId: string,
     buyInstrumentAdmin: string,
   ): Promise<SwapResult> {
-    logger.info('Executing Cantex swap', {
+    logger.info('[Cantex] Executing swap', {
       sell: `${sellAmount} ${sellInstrumentId}`,
       buy: buyInstrumentId,
     });
 
-    // Step 1: Build swap intent
+    // Step 1: Build swap intent — the server creates the intent structure
+    // with (from, to, amount, nonce) and returns a digest to sign
     const buildResult = await this.authPost<any>('/v1/intent/build/pool/swap', {
       sellAmount: String(sellAmount),
       sellInstrumentId,
@@ -362,30 +429,38 @@ export class CantexRealClient {
     const digest = buildResult.digest;
 
     if (!buildId || !digest) {
-      throw new CantexError('Swap build failed: no id or digest returned');
+      throw new CantexError(
+        `Swap build failed: no id or digest returned. Response: ${JSON.stringify(buildResult)}`,
+      );
     }
 
-    // Step 2: Sign digest with secp256k1 trading key
+    // Step 2: Sign the intent digest with secp256k1 trading key
+    // The digest encodes (from, to, amount, nonce) — signing it authorizes
+    // exactly this swap intent and no other
     let intentSignature: string;
     try {
       intentSignature = secp256k1Sign(digest, this.tradingKey);
     } catch (err) {
-      throw new CantexError(`Failed to sign swap intent: ${err}`);
+      throw new CantexError(`Failed to sign swap intent digest: ${err}`);
     }
 
-    // Step 3: Submit signed intent
+    // Step 3: Submit signed intent for on-chain settlement
     const submitResult = await this.authPost<any>('/v1/intent/submit', {
       id: buildId,
       intentTradingKeySignature: intentSignature,
     });
 
-    // Get quote for output amount estimation
+    // Get quote for output amount estimation (swap is async, so we estimate)
     const quote = await this.getSwapQuote(
       sellAmount, sellInstrumentId, sellInstrumentAdmin,
       buyInstrumentId, buyInstrumentAdmin,
     );
 
-    logger.info('Cantex swap submitted', { buildId, status: submitResult.status || 'submitted' });
+    logger.info('[Cantex] Swap submitted', {
+      buildId,
+      status: submitResult.status || 'submitted',
+      estimatedOutput: quote.returnedAmount,
+    });
 
     return {
       txId: buildId,

@@ -1,6 +1,7 @@
 import { config, TEMPLATES } from '../config.js';
 import { ledger } from '../ledger.js';
 import { logger } from '../monitoring/logger.js';
+import { featuredApp } from './featured-app.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -349,6 +350,19 @@ export class RewardsEngine {
               `(tier=${tier}, txCount=${payload.txCount}, month=${prevMonthId})`,
             { component: 'rewards' },
           );
+
+          // Record Featured App activity for reward distribution
+          try {
+            await featuredApp.recordRewardDistribution(
+              payload.user,
+              rewardAmount,
+              tier,
+              prevMonthId,
+            );
+          } catch {
+            // Best effort — don't fail the distribution for activity recording
+          }
+
           distributed++;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);

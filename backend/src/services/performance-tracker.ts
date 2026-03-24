@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'fs/promises';
 import path from 'path';
 import { logger } from '../monitoring/logger.js';
+import * as db from '../db/index.js';
 
 interface PerformanceSnapshot {
   timestamp: string;
@@ -8,13 +9,14 @@ interface PerformanceSnapshot {
   holdings: { asset: string; amount: number; valueCc: number }[];
 }
 
-// In-memory performance history (per party)
+// In-memory performance history (per party) — used as fallback when DB is unavailable
 const performanceHistory = new Map<string, PerformanceSnapshot[]>();
 const MAX_SNAPSHOTS = 720; // ~30 days at 1 per hour
 
 // ---------------------------------------------------------------------------
 // File-based persistence — survives process restarts.
-// Loaded on module init, saved after each snapshot recording.
+// Used only when DATABASE_URL is not configured. When Postgres is available,
+// data goes directly to the performance_snapshots table.
 // ---------------------------------------------------------------------------
 
 const STATE_PATH = process.env.PERFORMANCE_STATE_PATH
@@ -23,6 +25,7 @@ const STATE_PATH = process.env.PERFORMANCE_STATE_PATH
     : '/tmp/roil-finance-performance.json');
 
 async function savePerformanceState(): Promise<void> {
+  if (db.isDbAvailable()) return; // Postgres handles persistence
   try {
     const state: Record<string, PerformanceSnapshot[]> = {};
     for (const [party, history] of performanceHistory) {
@@ -33,6 +36,7 @@ async function savePerformanceState(): Promise<void> {
 }
 
 async function loadPerformanceState(): Promise<void> {
+  if (db.isDbAvailable()) return; // Will read from Postgres instead
   try {
     const data = await readFile(STATE_PATH, 'utf-8');
     const state = JSON.parse(data) as Record<string, PerformanceSnapshot[]>;
@@ -47,6 +51,22 @@ async function loadPerformanceState(): Promise<void> {
 void loadPerformanceState();
 
 export function recordSnapshot(party: string, totalValueCc: number, holdings: { asset: string; amount: number; valueCc: number }[]): void {
+  // Write to Postgres if available
+  if (db.isDbAvailable()) {
+    void db.insertSnapshot(party, totalValueCc, holdings).catch(() => {
+      // Fallback to in-memory on write failure
+      recordSnapshotInMemory(party, totalValueCc, holdings);
+    });
+    // Also keep latest in memory for fast reads
+    recordSnapshotInMemory(party, totalValueCc, holdings);
+    return;
+  }
+
+  // In-memory fallback
+  recordSnapshotInMemory(party, totalValueCc, holdings);
+}
+
+function recordSnapshotInMemory(party: string, totalValueCc: number, holdings: { asset: string; amount: number; valueCc: number }[]): void {
   if (!performanceHistory.has(party)) {
     performanceHistory.set(party, []);
   }
@@ -64,18 +84,32 @@ export function recordSnapshot(party: string, totalValueCc: number, holdings: { 
   void savePerformanceState();
 }
 
-export function getPerformance(party: string, window?: '1h' | '24h' | '7d' | '30d'): PerformanceSnapshot[] {
-  const history = performanceHistory.get(party) || [];
-  if (!window) return history;
-
-  const now = Date.now();
+export async function getPerformance(party: string, window?: '1h' | '24h' | '7d' | '30d'): Promise<PerformanceSnapshot[]> {
   const windowMs: Record<string, number> = {
     '1h': 3600000,
     '24h': 86400000,
     '7d': 604800000,
     '30d': 2592000000,
   };
-  const cutoff = now - (windowMs[window] || 86400000);
+  const sinceMs = window ? Date.now() - (windowMs[window] || 86400000) : undefined;
+
+  // Try Postgres first
+  if (db.isDbAvailable()) {
+    const rows = await db.getSnapshots(party, sinceMs, MAX_SNAPSHOTS);
+    if (rows.length > 0) {
+      return rows.map(r => ({
+        timestamp: r.created_at,
+        totalValueCc: r.total_value,
+        holdings: r.holdings,
+      })).reverse(); // DB returns DESC, we want ASC
+    }
+  }
+
+  // In-memory fallback
+  const history = performanceHistory.get(party) || [];
+  if (!window) return history;
+
+  const cutoff = Date.now() - (windowMs[window] || 86400000);
   return history.filter(s => new Date(s.timestamp).getTime() >= cutoff);
 }
 
@@ -87,6 +121,8 @@ export function getPerformanceSummary(party: string): {
   high30d: number;
   low30d: number;
 } {
+  // Use in-memory data for summary (fast, synchronous)
+  // The in-memory store is always populated alongside Postgres writes.
   const all = performanceHistory.get(party) || [];
   const current = all.length > 0 ? all[all.length - 1].totalValueCc : 0;
 
@@ -100,7 +136,7 @@ export function getPerformanceSummary(party: string): {
   const val7d = getValueAt(604800000);
   const val30d = getValueAt(2592000000);
 
-  const last30d = getPerformance(party, '30d');
+  const last30d = all.filter(s => new Date(s.timestamp).getTime() >= Date.now() - 2592000000);
   const values30d = last30d.map(s => s.totalValueCc);
 
   return {

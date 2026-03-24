@@ -23,6 +23,7 @@ export interface RouteQuote {
   fee: number;
   priceImpact: number;
   savings: number; // how much better than the worse quote
+  reason: string; // human-readable selection reason
 }
 
 export interface RoutedSwapResult {
@@ -66,9 +67,21 @@ export class SmartRouter {
     const worst = quotes[quotes.length - 1];
     best.savings = quotes.length > 1 ? best.outputAmount - worst.outputAmount : 0;
 
+    // Build a human-readable selection reason
+    if (quotes.length === 1) {
+      best.reason = `${best.source === 'cantex' ? 'Cantex' : 'Temple'} selected: only available DEX`;
+    } else {
+      const pctBetter = worst.outputAmount > 0
+        ? ((best.outputAmount - worst.outputAmount) / worst.outputAmount * 100).toFixed(2)
+        : '0.00';
+      const otherSource = best.source === 'cantex' ? 'Temple' : 'Cantex';
+      best.reason = `${best.source === 'cantex' ? 'Cantex' : 'Temple'} selected: better price by ${pctBetter}% vs ${otherSource}`;
+    }
+
     logger.info('[SmartRouter] Best quote selected', {
       source: best.source,
-      pair: `${fromAsset}→${toAsset}`,
+      reason: best.reason,
+      pair: `${fromAsset}->${toAsset}`,
       amount,
       output: best.outputAmount.toFixed(4),
       savings: best.savings.toFixed(4),
@@ -177,6 +190,7 @@ export class SmartRouter {
         fee: quote.fee,
         priceImpact: quote.slippage || 0,
         savings: 0,
+        reason: '',
       };
     } catch (err) {
       logger.warn('[SmartRouter] Cantex quote failed', { error: String(err) });
@@ -197,6 +211,7 @@ export class SmartRouter {
         fee: quote.fee,
         priceImpact: 0,
         savings: 0,
+        reason: '',
       };
     } catch (err) {
       logger.warn('[SmartRouter] Temple quote failed', { error: String(err) });

@@ -1,9 +1,30 @@
--- | Portfolio management contract for Roil
+-- | Portfolio management contract for Roil Finance — Canton Network aligned.
 -- Each user has one Portfolio contract that tracks their target allocations,
 -- current holdings, and rebalance configuration.
+--
+-- Canton integration notes:
+-- - Portfolio key is (platform, user) ensuring one portfolio per user.
+-- - All timestamps use Time (ledger effective time).
+-- - Result types are explicit for downstream consumption.
+-- - AllocationRequest interface would be implemented when Splice DARs available.
 module Portfolio where
 
 import Types
+import DA.Time
+import DA.TextMap (TextMap, empty)
+
+-- | Result of InitiateRebalance choice
+data InitiateRebalance_Result = InitiateRebalance_Result
+  with
+    portfolioCid : ContractId Portfolio
+    requestCid   : ContractId RebalanceRequest
+  deriving (Eq, Show)
+
+-- | Result of CompleteRebalance choice
+data CompleteRebalance_Result = CompleteRebalance_Result
+  with
+    logCid : ContractId RebalanceLog
+  deriving (Eq, Show)
 
 -- | Proposal for creating a portfolio (platform invites user)
 template PortfolioProposal
@@ -19,6 +40,7 @@ template PortfolioProposal
       with
         targets     : [TargetAllocation]
         triggerMode : TriggerMode
+        now         : Time
       controller user
       do
         assertMsg "Targets must sum to 100%" (validateTargets targets)
@@ -31,15 +53,27 @@ template PortfolioProposal
           triggerMode
           totalRebalances = 0
           isActive = True
+          createdAt = now
+          lastRebalanceAt = None
+          metadata = empty
 
     -- Platform can withdraw the proposal
     choice WithdrawProposal : ()
       controller platform
       do pure ()
 
--- | Main portfolio contract
--- Signatory: platform (ensures integrity of rebalance operations)
--- Observer: user (can see their portfolio at all times)
+-- | Main portfolio contract.
+-- Signatory: platform + user (ensures integrity of rebalance operations).
+-- Key: (platform, user) — one portfolio per user per platform.
+--
+-- Canton Network AllocationRequest integration:
+-- When Splice DARs are available, this template would implement:
+--   interface instance AllocationRequest.I for Portfolio where
+--     view = AllocationRequest.View with
+--       owner = user
+--       provider = platform
+--     allocation = ...
+-- This enables the portfolio to participate in Canton token allocation flows.
 template Portfolio
   with
     platform        : Party
@@ -49,8 +83,15 @@ template Portfolio
     triggerMode     : TriggerMode           -- manual or auto-drift
     totalRebalances : Int                   -- lifetime rebalance count
     isActive        : Bool
+    createdAt       : Time                  -- portfolio creation time
+    lastRebalanceAt : Optional Time         -- last successful rebalance
+    metadata        : TextMap Text          -- extensible metadata
   where
     signatory platform, user
+
+    key (platform, user) : (Party, Party)
+    maintainer key._1
+
     ensure validateTargets targets && length targets >= 2
       && (case triggerMode of
             DriftThreshold t -> t > 0.0
@@ -90,11 +131,11 @@ template Portfolio
       do
         pure (calcMaxDrift targets holdings)
 
-    -- Initiate a rebalance operation
-    -- Returns a RebalanceRequest that the backend will execute via Cantex
-    choice InitiateRebalance : (ContractId Portfolio, ContractId RebalanceRequest)
+    -- Initiate a rebalance operation.
+    -- Returns a structured result with the new portfolio and rebalance request.
+    choice InitiateRebalance : InitiateRebalance_Result
       with
-        requestedAt : Text
+        requestedAt : Time
       controller platform
       do
         assertMsg "Portfolio is not active" isActive
@@ -106,7 +147,9 @@ template Portfolio
           PriceCondition _ -> pure ()  -- price condition checked by backend
           Manual -> pure ()
 
-        let newPortfolio = this with totalRebalances = totalRebalances + 1
+        let newPortfolio = this with
+              totalRebalances = totalRebalances + 1
+              lastRebalanceAt = Some requestedAt
         portfolioCid <- create newPortfolio
         requestCid <- create RebalanceRequest with
           platform
@@ -116,7 +159,7 @@ template Portfolio
           status = Pending
           swapLegs = []
           requestedAt
-        pure (portfolioCid, requestCid)
+        pure InitiateRebalance_Result with ..
 
     -- User deactivates the portfolio
     choice DeactivatePortfolio : ContractId Portfolio
@@ -130,8 +173,16 @@ template Portfolio
       do
         create this with isActive = True
 
--- | Rebalance request — created when a rebalance is initiated
--- The backend service processes this by executing swaps via Cantex
+    -- Update extensible metadata
+    choice UpdateMetadata : ContractId Portfolio
+      with
+        newMetadata : TextMap Text
+      controller user
+      do
+        create this with metadata = newMetadata
+
+-- | Rebalance request — created when a rebalance is initiated.
+-- The backend service processes this by executing swaps via Cantex.
 template RebalanceRequest
   with
     platform          : Party
@@ -140,7 +191,7 @@ template RebalanceRequest
     targetAllocations : [TargetAllocation]
     status            : RebalanceStatus
     swapLegs          : [SwapLeg]
-    requestedAt       : Text         -- ISO timestamp
+    requestedAt       : Time
   where
     signatory platform, user
 
@@ -156,11 +207,12 @@ template RebalanceRequest
           swapLegs = legs
           status = Executing
 
-    -- Platform marks rebalance as completed after successful execution
-    choice CompleteRebalance : ContractId RebalanceLog
+    -- Platform marks rebalance as completed after successful execution.
+    -- Returns a structured result wrapping the log contract ID.
+    choice CompleteRebalance : CompleteRebalance_Result
       with
         executedLegs : [SwapLeg]
-        completedAt  : Text
+        completedAt  : Time
       controller platform
       do
         assertMsg "Request must be Executing" (status == Executing)
@@ -171,16 +223,15 @@ template RebalanceRequest
           driftBefore = calcMaxDrift targetAllocations currentHoldings
           timestamp = completedAt
 
-        -- FEATURED APP REWARDS INTEGRATION POINT:
+        -- Featured App Rewards integration:
         -- After a successful rebalance, the backend should call
         -- FeaturedAppConfig.RecordActivity with:
         --   activityType = Rebalance
         --   description  = "Portfolio rebalance: <N> swap legs executed"
-        -- On the real Canton Network, this will exercise
-        -- FeaturedAppRight_CreateActivityMarker to generate an
-        -- AppRewardCoupon, earning CC rewards for the platform.
+        -- When Splice DARs are available and FeaturedAppRight is held,
+        -- this triggers AppRewardCoupon creation automatically.
 
-        pure logCid
+        pure CompleteRebalance_Result with ..
 
     -- Platform marks rebalance as failed
     choice FailRebalance : ContractId RebalanceRequest
@@ -191,15 +242,15 @@ template RebalanceRequest
         assertMsg "Request cannot be already Completed" (status /= Completed)
         create this with status = Failed reason
 
--- | Immutable log of a completed rebalance
--- Serves as audit trail and history for the user
+-- | Immutable log of a completed rebalance.
+-- Serves as audit trail and history for the user.
 template RebalanceLog
   with
     platform    : Party
     user        : Party
     swapLegs    : [SwapLeg]
     driftBefore : Decimal
-    timestamp   : Text
+    timestamp   : Time
   where
     signatory platform
     observer user
@@ -207,22 +258,22 @@ template RebalanceLog
 -- | Compound yield configuration stored on ledger
 template CompoundConfig
   with
-    platform        : Party
-    user            : Party
-    strategy        : Text           -- "portfolio-targets" | "same-asset" | "usdc-only"
-    minYieldThreshold : Decimal      -- minimum yield to trigger compound
-    isEnabled       : Bool
-    lastCompoundAt  : Text           -- ISO timestamp
-    totalCompounded : Decimal        -- lifetime compounded value in CC
+    platform          : Party
+    user              : Party
+    strategy          : Text           -- "portfolio-targets" | "same-asset" | "usdc-only"
+    minYieldThreshold : Decimal        -- minimum yield to trigger compound
+    isEnabled         : Bool
+    lastCompoundAt    : Optional Time  -- last compound execution time
+    totalCompounded   : Decimal        -- lifetime compounded value in CC
   where
     signatory platform
     observer user
 
     choice UpdateCompoundConfig : ContractId CompoundConfig
       with
-        newStrategy : Text
+        newStrategy  : Text
         newThreshold : Decimal
-        newEnabled : Bool
+        newEnabled   : Bool
       controller user
       do
         create this with
@@ -233,13 +284,13 @@ template CompoundConfig
     choice RecordCompound : ContractId CompoundConfig
       with
         compoundedAmount : Decimal
-        compoundedAt : Text
+        compoundedAt     : Time
       controller platform
       do
         assertMsg "Compound amount must be positive" (compoundedAmount > 0.0)
         create this with
           totalCompounded = totalCompounded + compoundedAmount
-          lastCompoundAt = compoundedAt
+          lastCompoundAt = Some compoundedAt
 
 -- | User preferences stored on ledger
 template UserPreferences
@@ -250,7 +301,7 @@ template UserPreferences
     slippageTolerance  : Decimal      -- preferred slippage (e.g., 0.02 = 2%)
     notificationsOn    : Bool
     autoRebalanceOn    : Bool
-    createdAt          : Text
+    createdAt          : Time
   where
     signatory platform
     observer user
@@ -278,7 +329,7 @@ template PortfolioAuditLog
     user         : Party
     changeType   : Text    -- "targets_updated" | "trigger_changed" | "activated" | "deactivated"
     description  : Text    -- human-readable description of change
-    timestamp    : Text
+    timestamp    : Time
   where
     signatory platform
     observer user
@@ -291,7 +342,7 @@ template CompoundLog
     strategy          : Text
     compoundedAmount  : Decimal
     reinvestments     : [Text]     -- description of each reinvestment
-    timestamp         : Text
+    timestamp         : Time
   where
     signatory platform
     observer user
