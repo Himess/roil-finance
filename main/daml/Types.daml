@@ -2,8 +2,6 @@
 -- All timestamps use DA.Time.Time (not Text) for proper ledger-time integration.
 module Types where
 
-import DA.Time
-
 -- | Supported asset identifiers on Canton Network.
 -- Mirrors the Splice instrument model (issuer + symbol).
 data AssetId = AssetId

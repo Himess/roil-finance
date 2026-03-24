@@ -7,7 +7,6 @@
 module DCA where
 
 import Types
-import DA.Time
 
 -- | Result of ExecuteDCA choice
 data ExecuteDCA_Result = ExecuteDCA_Result
@@ -41,8 +40,7 @@ template DCASchedule
     observer user
     ensure amountPerBuy > 0.0 && sourceAsset /= targetAsset
 
-    key (platform, user, sourceAsset, targetAsset) : (Party, Party, AssetId, AssetId)
-    maintainer key._1
+    -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 
     -- Execute a single DCA buy.
     -- Called by backend/trigger on schedule.

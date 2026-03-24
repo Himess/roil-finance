@@ -22,11 +22,10 @@
 module TokenTransfer where
 
 import Types
-import DA.Time
 import DA.TextMap (TextMap, empty)
 
 -- | Status of a transfer or swap
-data TransferStatus = Pending | Completed | Rejected | Cancelled
+data TransferStatus = TransferPending | TransferCompleted | TransferRejected | TransferCancelled
   deriving (Eq, Show)
 
 -- | Transfer request between parties.
@@ -55,7 +54,7 @@ template TransferRequest
         approvedAt : Time
       controller receiver
       do
-        assertMsg "Transfer must be Pending" (status == Pending)
+        assertMsg "Transfer must be Pending" (status == TransferPending)
         -- Validate settlement deadlines if present
         case settlement of
           Some si -> do
@@ -72,8 +71,8 @@ template TransferRequest
     choice RejectTransfer : ContractId TransferRequest
       controller receiver
       do
-        assertMsg "Transfer must be Pending" (status == Pending)
-        create this with status = Rejected
+        assertMsg "Transfer must be Pending" (status == TransferPending)
+        create this with status = TransferRejected
 
     -- Sender withdraws the transfer
     choice WithdrawTransfer : ()

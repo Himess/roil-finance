@@ -10,7 +10,6 @@
 module Portfolio where
 
 import Types
-import DA.Time
 import DA.TextMap (TextMap, empty)
 
 -- | Result of InitiateRebalance choice
@@ -89,8 +88,7 @@ template Portfolio
   where
     signatory platform, user
 
-    key (platform, user) : (Party, Party)
-    maintainer key._1
+    -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 
     ensure validateTargets targets && length targets >= 2
       && (case triggerMode of

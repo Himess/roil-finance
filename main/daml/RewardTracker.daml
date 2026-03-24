@@ -7,7 +7,6 @@
 module RewardTracker where
 
 import Types
-import DA.Time
 import DA.Optional (fromOptional)
 
 -- | Result of DistributeReward choice
@@ -34,8 +33,7 @@ template RewardTracker
     observer user
     ensure txCount >= 0 && consecutiveMonths >= 0 && totalRewardsEarned >= 0.0
 
-    key (platform, user, monthId) : (Party, Text, Text)
-    maintainer key._1
+    -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 
     -- Platform records a valid transaction.
     -- Called after each rebalance, DCA, or compound TX.

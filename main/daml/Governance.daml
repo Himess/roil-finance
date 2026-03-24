@@ -7,7 +7,6 @@
 module Governance where
 
 import Types
-import DA.Time
 
 -- | Platform-wide admin configuration.
 -- One RoilAdmin contract per platform party.
@@ -24,8 +23,7 @@ template RoilAdmin
   where
     signatory platform
 
-    key platform : Party
-    maintainer key
+    -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 
     ensure rebalanceFeePct >= 0.0 && rebalanceFeePct <= 100.0
       && minPortfolioValue >= 0.0

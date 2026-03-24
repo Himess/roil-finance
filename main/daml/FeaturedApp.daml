@@ -11,8 +11,6 @@
 -- these to report activity metrics and prepare for network integration.
 module FeaturedApp where
 
-import DA.Time
-
 -- | Activity types for reward tracking
 data ActivityType
   = Rebalance

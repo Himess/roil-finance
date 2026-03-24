@@ -12,8 +12,6 @@
 -- 4. The receiver can revoke or update limits at any time.
 module TransferPreapproval where
 
-import DA.Time
-
 -- | Result of ExecutePreapprovedTransfer choice
 data ExecutePreapprovedTransfer_Result = ExecutePreapprovedTransfer_Result
   with
@@ -39,8 +37,7 @@ template TransferPreapproval
     signatory sender, receiver
     ensure maxAmountPerTransfer > 0.0
 
-    key (sender, receiver, instrumentId) : (Party, Party, Text)
-    maintainer key._1
+    -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 
     -- Execute a pre-approved transfer.
     -- Validates: amount within limit, not expired, is active.
