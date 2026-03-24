@@ -16,8 +16,9 @@
 </p>
 
 <p align="center">
-  <a href="https://roil-finance.vercel.app">Live Demo</a> &middot;
-  <a href="https://roil-finance.vercel.app/slides">Pitch Deck</a> &middot;
+  <a href="https://roil.app">App</a> &middot;
+  <a href="https://roil.app/home">Landing Page</a> &middot;
+  <a href="https://www.youtube.com/watch?v=_MagWXLwyiw">Demo Video</a> &middot;
   <a href="https://github.com/Himess/roil-finance">GitHub</a>
 </p>
 
@@ -509,8 +510,9 @@ This project is licensed under the [MIT License](./LICENSE).
 </p>
 
 <p align="center">
-  <a href="https://roil-finance.vercel.app">Live Demo</a> &middot;
-  <a href="https://roil-finance.vercel.app/slides">Pitch Deck</a> &middot;
+  <a href="https://roil.app">App</a> &middot;
+  <a href="https://roil.app/home">Landing Page</a> &middot;
+  <a href="https://www.youtube.com/watch?v=_MagWXLwyiw">Demo Video</a> &middot;
   <a href="https://github.com/Himess/roil-finance">GitHub</a> &middot;
   <a href="https://www.canton.network/">Canton Network</a> &middot;
   <a href="https://www.cantex.io/">Cantex</a> &middot;
