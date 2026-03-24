@@ -153,7 +153,7 @@ marketRouter.get('/quote', async (req, res) => {
     }
     const quote = await cantex.getQuote(String(from), String(to), Number(amount));
     res.json({ success: true, data: quote });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: null, note: 'Quote not available' });
   }
 });
@@ -177,7 +177,7 @@ marketRouter.get('/network', async (_req, res) => {
         network: config.network,
       },
     });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: { openRounds: [], featuredApps: [], network: config.network } });
   }
 });
@@ -200,7 +200,7 @@ marketRouter.get('/best-quote', async (req, res) => {
     const quote = await smartRouter.getBestQuote(String(from), String(to), Number(amount));
     res.json({ success: true, data: quote });
   } catch (err: any) {
-    res.json({ success: true, data: null, error: err.message });
+    res.status(500).json({ success: false, error: err.message || 'Failed to get best quote' });
   }
 });
 
@@ -217,7 +217,7 @@ marketRouter.get('/compare-quotes', async (req, res) => {
     }
     const quotes = await smartRouter.getAllQuotes(String(from), String(to), Number(amount));
     res.json({ success: true, data: quotes });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: [] });
   }
 });
@@ -249,7 +249,7 @@ marketRouter.get('/orderbook', async (req, res) => {
     }
     const orderbook = await templeClient.getOrderbook(String(from), String(to));
     res.json({ success: true, data: orderbook });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: null });
   }
 });

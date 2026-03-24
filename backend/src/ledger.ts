@@ -4,6 +4,7 @@ import { config, TOKEN_STANDARD } from './config.js';
 import { withRetry } from './utils/retry.js';
 import { ledgerBreaker } from './utils/circuit-breaker.js';
 import { LedgerError } from './utils/errors.js';
+import { decimalToNumber } from './utils/decimal.js';
 
 // ---------------------------------------------------------------------------
 // Types — Canton JSON Ledger API v2
@@ -68,6 +69,7 @@ function buildJwt(actAs: string[], readAs: string[]): string {
     aud: config.jwtAudience,
     iss: config.applicationId,
     iat: now,
+    nbf: now - 30, // 30s clock skew tolerance for Canton
     exp: now + 3600,
     scope: 'daml_ledger_api',
     actAs,
@@ -541,7 +543,7 @@ export class DamlLedger {
       for (const h of holdings) {
         const payload = h.payload;
         if (payload?.instrument?.id === asset && payload?.owner === party) {
-          total += parseFloat(payload.amount || '0');
+          total += decimalToNumber(payload.amount || '0');
         }
       }
 

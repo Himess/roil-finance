@@ -9,11 +9,48 @@
 // State is kept in-memory with all mutations logged to an audit trail.
 // ---------------------------------------------------------------------------
 
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { config, INSTRUMENTS } from '../config.js';
 import { requireAdmin } from '../middleware/admin-auth.js';
 import { logger } from '../monitoring/logger.js';
+
+// ---------------------------------------------------------------------------
+// Stricter rate limiter for admin endpoints: 10 requests per minute per IP
+// ---------------------------------------------------------------------------
+
+const ADMIN_RATE_LIMIT = 10;
+const ADMIN_RATE_WINDOW = 60_000; // 1 minute
+const adminRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+function adminRateLimiter(req: Request, res: Response, next: NextFunction): void {
+  const ip = req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const entry = adminRequestCounts.get(ip);
+
+  if (!entry || now > entry.resetAt) {
+    adminRequestCounts.set(ip, { count: 1, resetAt: now + ADMIN_RATE_WINDOW });
+    next();
+    return;
+  }
+
+  if (entry.count >= ADMIN_RATE_LIMIT) {
+    logger.warn('Admin rate limit exceeded', { ip, path: req.path, count: entry.count });
+    res.status(429).json({ success: false, error: 'Admin rate limit exceeded. Max 10 requests per minute.' });
+    return;
+  }
+
+  entry.count++;
+  next();
+}
+
+// Cleanup expired admin rate limit entries every 60s
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of adminRequestCounts.entries()) {
+    if (now > entry.resetAt) adminRequestCounts.delete(ip);
+  }
+}, 60_000).unref();
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -128,7 +165,8 @@ export function getAllowedAssets(): string[] {
 
 export const adminRouter = Router();
 
-// All admin routes require platform party authentication
+// All admin routes: stricter rate limit + platform party authentication
+adminRouter.use(adminRateLimiter);
 adminRouter.use(requireAdmin);
 
 /**

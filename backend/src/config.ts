@@ -264,10 +264,34 @@ export async function resolveTemplateIds(): Promise<string | null> {
   return hash;
 }
 
-/** Clear cached package hash (for testing). */
+/**
+ * Clear cached package hash.
+ * @internal Test-only — not intended for production use.
+ */
 export function _resetPackageHash(): void {
   _resolvedPackageHash = null;
 }
+
+// ---------------------------------------------------------------------------
+// Fallback prices — used by PriceOracle when Cantex is unreachable
+// ---------------------------------------------------------------------------
+
+/**
+ * Emergency fallback prices (in USDCx/USD) used when Cantex is completely
+ * unreachable and no cached prices exist. These are approximate values and
+ * should only be used as a last resort.
+ */
+export const FALLBACK_PRICES: Record<string, number> = {
+  CC: 0.15,
+  USDCx: 1.0,
+  CBTC: 40_000.0,
+  ETHx: 2_500.0,
+  SOLx: 150.0,
+  XAUt: 2_300.0,
+  XAGt: 28.0,
+  USTb: 1.0,
+  MMF: 1.0,
+};
 
 // ---------------------------------------------------------------------------
 // CIP-0056 Token Standard interfaces

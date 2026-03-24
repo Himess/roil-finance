@@ -2,6 +2,7 @@ import { ledger, extractCreatedContractId, type DamlContract } from '../ledger.j
 import { cantex } from '../cantex.js';
 import { config, TEMPLATES, TOKEN_STANDARD, INSTRUMENTS } from '../config.js';
 import { logger } from '../monitoring/logger.js';
+import { decimalToNumber } from '../utils/decimal.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -186,7 +187,7 @@ export class TokenTransferService {
       return contracts.map((c) => ({
         instrumentId: c.payload.instrument.id,
         instrumentAdmin: c.payload.instrument.admin,
-        amount: Number(c.payload.amount),
+        amount: decimalToNumber(c.payload.amount),
       }));
     } catch (err) {
       logger.error('[TokenTransfer] Failed to query CIP-0056 Holdings', { error: String(err) });

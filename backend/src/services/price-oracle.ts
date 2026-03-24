@@ -1,5 +1,5 @@
 import { cantex } from '../cantex.js';
-import { INSTRUMENTS } from '../config.js';
+import { INSTRUMENTS, FALLBACK_PRICES } from '../config.js';
 import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
@@ -26,28 +26,6 @@ interface HistoryPoint {
   timestamp: string;
 }
 
-// ---------------------------------------------------------------------------
-// Fallback prices — used when Cantex is unreachable
-// ---------------------------------------------------------------------------
-
-/**
- * Emergency fallback prices used when Cantex is completely unreachable
- * and no cached prices exist. These are approximate values and should
- * only be used as a last resort. In production, the hot cache and
- * stale cache tiers should handle most outage scenarios.
- */
-const FALLBACK_PRICES: Record<string, number> = {
-  CC: 0.15,
-  USDCx: 1.0,
-  CBTC: 40_000.0,
-  ETHx: 2_500.0,
-  SOLx: 150.0,
-  XAUt: 2_300.0,
-  XAGt: 28.0,
-  USTb: 1.0,
-  MMF: 1.0,
-};
-
 const SUPPORTED_ASSETS = Object.keys(INSTRUMENTS);
 
 // ---------------------------------------------------------------------------
@@ -70,7 +48,8 @@ export class PriceOracle {
   // Price history is intentionally in-memory for performance.
   // Data survives as long as the process runs; lost on restart.
   // For production, consider TimescaleDB or InfluxDB integration.
-  private priceHistory = new Map<string, HistoryPoint[]>();
+  // Uses a circular buffer per asset for O(1) insertion without splice/shift.
+  private historyBuffers = new Map<string, { data: HistoryPoint[]; writeIdx: number; size: number }>();
   private pollingInterval: ReturnType<typeof setInterval> | null = null;
 
   /** Maximum history points to retain per asset (48h at 30s intervals = 5760) */
@@ -100,7 +79,6 @@ export class PriceOracle {
       const priceUsdcx = prices[asset];
 
       if (priceUsdcx !== undefined) {
-        const history = this.priceHistory.get(asset) ?? [];
         const change24h = this.compute24hChange(asset, priceUsdcx);
         const volume24h = await this.estimateVolume(asset);
 
@@ -214,7 +192,7 @@ export class PriceOracle {
    * requested time window. In production this would query a time-series DB.
    */
   async getPriceHistory(asset: string, hours: number): Promise<HistoryPoint[]> {
-    const history = this.priceHistory.get(asset) ?? [];
+    const history = this.readHistory(asset);
     const cutoff = Date.now() - hours * 60 * 60 * 1000;
 
     return history.filter((p) => new Date(p.timestamp).getTime() >= cutoff);
@@ -294,29 +272,39 @@ export class PriceOracle {
   }
 
   private recordHistory(asset: string, price: number): void {
-    let history = this.priceHistory.get(asset);
-    if (!history) {
-      history = [];
-      this.priceHistory.set(asset, history);
+    let buf = this.historyBuffers.get(asset);
+    if (!buf) {
+      buf = { data: new Array<HistoryPoint>(this.MAX_HISTORY_POINTS), writeIdx: 0, size: 0 };
+      this.historyBuffers.set(asset, buf);
     }
 
-    history.push({
-      price,
-      timestamp: new Date().toISOString(),
-    });
+    buf.data[buf.writeIdx] = { price, timestamp: new Date().toISOString() };
+    buf.writeIdx = (buf.writeIdx + 1) % this.MAX_HISTORY_POINTS;
+    if (buf.size < this.MAX_HISTORY_POINTS) buf.size++;
+  }
 
-    // Trim to max points
-    if (history.length > this.MAX_HISTORY_POINTS) {
-      history.splice(0, history.length - this.MAX_HISTORY_POINTS);
+  /**
+   * Read the circular buffer in chronological order (oldest first).
+   */
+  private readHistory(asset: string): HistoryPoint[] {
+    const buf = this.historyBuffers.get(asset);
+    if (!buf || buf.size === 0) return [];
+
+    const result: HistoryPoint[] = [];
+    // If buffer is not full, entries start at index 0
+    const startIdx = buf.size < this.MAX_HISTORY_POINTS ? 0 : buf.writeIdx;
+    for (let i = 0; i < buf.size; i++) {
+      result.push(buf.data[(startIdx + i) % this.MAX_HISTORY_POINTS]);
     }
+    return result;
   }
 
   /**
    * Compute the 24h price change percentage from history.
    */
   private compute24hChange(asset: string, currentPrice: number): number {
-    const history = this.priceHistory.get(asset);
-    if (!history || history.length === 0) return 0;
+    const history = this.readHistory(asset);
+    if (history.length === 0) return 0;
 
     const cutoff24h = Date.now() - 24 * 60 * 60 * 1000;
 

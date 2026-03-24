@@ -7,6 +7,7 @@ import { cantex } from '../cantex.js';
 import { requireParty } from '../middleware/auth.js';
 import { getPerformance, getPerformanceSummary } from '../services/performance-tracker.js';
 import { transactionStream } from '../services/transaction-stream.js';
+import { decimalToNumber } from '../utils/decimal.js';
 
 // ---------------------------------------------------------------------------
 // Validation schemas
@@ -22,8 +23,14 @@ const TargetAllocationSchema = z.object({
   targetPct: z.number().min(0).max(100),
 });
 
+/** Daml party ID format: identifier::hex-fingerprint */
+const PartyIdSchema = z.string().min(5).regex(
+  /^[a-zA-Z0-9_-]+::[0-9a-fA-F]+$/,
+  'Invalid party ID format. Expected format: identifier::hexFingerprint',
+);
+
 const CreatePortfolioSchema = z.object({
-  user: z.string().min(1),
+  user: PartyIdSchema,
   targets: z.array(TargetAllocationSchema).min(2).max(20),
   triggerMode: z.union([
     z.literal('Manual'),
@@ -59,7 +66,7 @@ portfolioRouter.get('/templates', (_req, res) => {
 
 // POST /api/portfolio/from-template — create portfolio from a template
 const FromTemplateSchema = z.object({
-  user: z.string().min(1),
+  user: PartyIdSchema,
   templateId: z.string().min(1),
 });
 
@@ -89,8 +96,9 @@ portfolioRouter.post('/from-template', async (req, res) => {
       success: true,
       data: { contractId, template: template.name, targets, triggerMode: template.triggerMode },
     });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -119,8 +127,9 @@ portfolioRouter.get('/:party/performance', requireParty('party'), async (req, re
     const summary = getPerformanceSummary(party!);
     const history = await getPerformance(party!, window as any);
     res.json({ success: true, data: { summary, history } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -165,7 +174,7 @@ portfolioRouter.post('/', async (req: Request, res: Response) => {
 
     // Authorization: verify the caller can act as the specified user
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       if (user && !actAs.includes(user)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this party' });
       }
@@ -264,7 +273,7 @@ portfolioRouter.put('/:id/targets', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const portfolioUser = portfolio?.payload?.user;
       if (portfolioUser && !actAs.includes(portfolioUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this portfolio' });
@@ -309,7 +318,7 @@ portfolioRouter.post('/:id/simulate', async (req: Request, res: Response) => {
     const swapLegs = await rebalanceEngine.planSwapLegs(holdings, targets);
 
     const threshold = triggerMode.tag === 'DriftThreshold'
-      ? parseFloat(String(triggerMode.value))
+      ? decimalToNumber(String(triggerMode.value))
       : config.defaultDriftThreshold;
 
     res.json({
@@ -338,7 +347,7 @@ portfolioRouter.post('/:id/rebalance', async (req: Request, res: Response) => {
 
     // Authorization: verify the authenticated party owns this portfolio
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const portfolios = await ledger.query<PortfolioPayload>(TEMPLATES.Portfolio, config.platformParty);
       const portfolio = portfolios.find((p) => p.contractId === id);
       if (portfolio && !actAs.includes(portfolio.payload.user)) {
@@ -466,15 +475,16 @@ portfolioRouter.put('/:id/trigger-mode', async (req, res) => {
     }
     // Auth check
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       if (!actAs.includes(userParty)) {
         return res.status(403).json({ success: false, error: 'Not authorized' });
       }
     }
     await ledger.exerciseAs(TEMPLATES.Portfolio, id!, 'UpdateTriggerMode', { newMode: triggerMode }, userParty);
     res.json({ success: true, data: { contractId: id, triggerMode } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -491,8 +501,9 @@ portfolioRouter.post('/:id/deactivate', async (req, res) => {
     }
     await ledger.exerciseAs(TEMPLATES.Portfolio, id!, 'DeactivatePortfolio', {}, userParty);
     res.json({ success: true, data: { contractId: id, isActive: false } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -509,8 +520,9 @@ portfolioRouter.post('/:id/activate', async (req, res) => {
     }
     await ledger.exerciseAs(TEMPLATES.Portfolio, id!, 'ActivatePortfolio', {}, userParty);
     res.json({ success: true, data: { contractId: id, isActive: true } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -560,7 +572,7 @@ portfolioRouter.get('/:id/rebalance-detail', async (req: Request, res: Response)
         status: 'Completed',
         timestamp: log.payload.timestamp || '',
         swapLegs: log.payload.swapLegs || [],
-        driftBefore: parseFloat(String(log.payload.driftBefore)) || 0,
+        driftBefore: decimalToNumber(String(log.payload.driftBefore || '0')),
         driftAfter: 0,
         user: log.payload.user,
       },
@@ -608,8 +620,9 @@ portfolioRouter.delete('/:id', async (req, res) => {
     // Deactivate instead of delete (Daml doesn't support arbitrary archive)
     await ledger.exerciseAs(TEMPLATES.Portfolio, id!, 'DeactivatePortfolio', {}, userParty);
     res.json({ success: true, data: { archived: true } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 

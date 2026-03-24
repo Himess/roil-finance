@@ -47,7 +47,7 @@ compoundRouter.get('/:party/projected', requireParty('party'), async (req, res) 
     const { party } = req.params as Record<string, string>;
     const yields = await compoundEngine.detectYields(party!);
     res.json({ success: true, data: yields });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: null });
   }
 });

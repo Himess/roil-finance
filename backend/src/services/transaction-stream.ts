@@ -75,7 +75,10 @@ export class TransactionStream extends EventEmitter {
 
         // Process streaming response (newline-delimited JSON)
         const reader = res.body?.getReader();
-        if (!reader) continue;
+        if (!reader) {
+          logger.warn('Transaction stream reader is null, skipping cycle');
+          continue;
+        }
 
         const decoder = new TextDecoder();
         let buffer = '';

@@ -66,8 +66,21 @@ async function initRedis(): Promise<void> {
   }
 }
 
-// Initialize Redis on module load (non-blocking)
-void initRedis();
+// ---------------------------------------------------------------------------
+// Redis initialization — awaitable for server startup
+// ---------------------------------------------------------------------------
+
+/** Promise that resolves when Redis init completes (or immediately if no Redis). */
+export const redisReady: Promise<void> = initRedis();
+
+/**
+ * Wait for Redis initialization before accepting requests.
+ * Call this in server.ts startup to avoid the race condition where
+ * `useRedis` is false when the first request arrives.
+ */
+export async function waitForRedis(): Promise<void> {
+  await redisReady;
+}
 
 async function redisIncrement(key: string): Promise<{ count: number; resetAt: number }> {
   const redisKey = `ratelimit:${key}`;

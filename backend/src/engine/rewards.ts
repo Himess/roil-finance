@@ -2,6 +2,7 @@ import { config, TEMPLATES } from '../config.js';
 import { ledger } from '../ledger.js';
 import { logger } from '../monitoring/logger.js';
 import { featuredApp } from './featured-app.js';
+import { decimalToNumber } from '../utils/decimal.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -288,7 +289,7 @@ export class RewardsEngine {
     return payouts
       .filter((p) => p.payload.user === userId)
       .map((p) => ({
-        amount: Number(p.payload.amount),
+        amount: decimalToNumber(p.payload.amount),
         tier: parseTier(p.payload.tier),
         monthId: p.payload.monthId,
         txCount: p.payload.txCount,

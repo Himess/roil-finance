@@ -43,7 +43,7 @@ rewardsRouter.get('/leaderboard', async (_req, res) => {
       .map((entry: any, i: number) => ({ ...entry, rank: i + 1 }));
 
     res.json({ success: true, data: leaderboard });
-  } catch (err: any) {
+  } catch {
     res.json({ success: true, data: [] });
   }
 });
@@ -100,8 +100,9 @@ rewardsRouter.post('/referral', async (req, res) => {
       config.platformParty,
     );
     res.status(201).json({ success: true, data: { contractId } });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 
@@ -111,7 +112,8 @@ rewardsRouter.get('/:party/referrals', requireParty('party'), async (req, res) =
     const { party } = req.params as Record<string, string>;
     const referrals = await ledger.query(TEMPLATES.Referral, party!);
     res.json({ success: true, data: referrals });
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });

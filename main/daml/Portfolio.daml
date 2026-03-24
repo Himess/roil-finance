@@ -121,6 +121,10 @@ template Portfolio
         newHoldings : [Holding]
       controller platform
       do
+        assertMsg "Holdings must not be empty (at least 1 holding required)" (not (null newHoldings))
+        assertMsg "All holding amounts must be >= 0 (no negative holdings)" (all (\h -> h.amount >= 0.0) newHoldings)
+        assertMsg "All holding valueCc must be >= 0" (all (\h -> h.valueCc >= 0.0) newHoldings)
+        assertMsg "No duplicate assets allowed in holdings" (not (hasDuplicateHoldingAssets newHoldings))
         create this with holdings = newHoldings
 
     -- Check if rebalance is needed based on current drift
@@ -142,7 +146,11 @@ template Portfolio
         case triggerMode of
           DriftThreshold threshold ->
             assertMsg "Drift below threshold" (drift >= threshold)
-          PriceCondition _ -> pure ()  -- price condition checked by backend
+          -- PriceCondition: Validated by backend before calling InitiateRebalance.
+          -- On-chain validation is not possible because price feeds are external to the ledger.
+          -- The backend MUST verify the price condition is met before exercising this choice.
+          -- Future: Consider using a PriceOracle contract to bring prices on-chain.
+          PriceCondition _ -> pure ()
           Manual -> pure ()
 
         let newPortfolio = this with

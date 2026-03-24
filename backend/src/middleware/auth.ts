@@ -4,6 +4,17 @@ import { config } from '../config.js';
 import { logger } from '../monitoring/logger.js';
 
 // ---------------------------------------------------------------------------
+// Typed authenticated request interface
+// ---------------------------------------------------------------------------
+
+/** Express Request extended with verified party info from JWT. */
+export interface AuthenticatedRequest extends Request {
+  actAs: string[];
+  readAs: string[];
+  partyId: string;
+}
+
+// ---------------------------------------------------------------------------
 // Extend Express Request to carry verified party info
 // ---------------------------------------------------------------------------
 
@@ -12,6 +23,10 @@ declare global {
     interface Request {
       /** Parties extracted from the verified JWT */
       actAs?: string[];
+      /** Read-as parties extracted from the verified JWT */
+      readAs?: string[];
+      /** Primary party ID (first actAs party) */
+      partyId?: string;
     }
   }
 }
@@ -173,14 +188,29 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
 
     if (payload) {
-      // Extract actAs parties from JWT
+      // Extract actAs/readAs parties from JWT
       const actAs = Array.isArray(payload.actAs) ? payload.actAs as string[] : [];
+      const readAs = Array.isArray(payload.readAs) ? payload.readAs as string[] : actAs;
       req.actAs = actAs;
+      req.readAs = readAs;
+      req.partyId = actAs[0] || '';
       next();
       return;
     }
 
-    // Token present but invalid
+    // Token present but invalid — determine reason for logging
+    const rawPayload = decodeJwtPayload(token);
+    let failureReason = 'invalid signature or unknown algorithm';
+    if (rawPayload && typeof rawPayload.exp === 'number' && rawPayload.exp < Math.floor(Date.now() / 1000)) {
+      failureReason = 'token expired';
+    }
+
+    logger.warn('Auth failure: invalid token', {
+      ip: req.socket.remoteAddress || 'unknown',
+      path: req.path,
+      reason: failureReason,
+    });
+
     if (config.network !== 'localnet') {
       res.status(401).json({ success: false, error: 'Invalid or expired token' });
       return;
@@ -190,6 +220,11 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     logger.warn('Invalid JWT in localnet mode, allowing request', { path: req.path });
   } else if (config.network !== 'localnet') {
     // No token in non-localnet mode
+    logger.warn('Auth failure: missing authorization header', {
+      ip: req.socket.remoteAddress || 'unknown',
+      path: req.path,
+      reason: 'missing Authorization header',
+    });
     res.status(401).json({ success: false, error: 'Authorization header required' });
     return;
   }
@@ -215,7 +250,7 @@ export function requireParty(paramName: string = 'party') {
     const targetParty = req.params[paramName] || req.body?.user || req.body?.party;
     if (!targetParty) return next(); // No party to check
 
-    const actAs = (req as any).actAs as string[] | undefined;
+    const actAs = req.actAs;
     if (!actAs || !actAs.includes(targetParty)) {
       return res.status(403).json({
         success: false,

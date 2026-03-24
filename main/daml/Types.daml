@@ -117,7 +117,16 @@ hasDuplicateAssets [] = False
 hasDuplicateAssets (t :: rest) =
   any (\r -> r.asset == t.asset) rest || hasDuplicateAssets rest
 
--- | Validate that target allocations sum to 100%
+-- | Check for duplicate assets in a list of holdings
+hasDuplicateHoldingAssets : [Holding] -> Bool
+hasDuplicateHoldingAssets [] = False
+hasDuplicateHoldingAssets (h :: rest) =
+  any (\r -> r.asset == h.asset) rest || hasDuplicateHoldingAssets rest
+
+-- | Validates that target allocations sum to ~100% (within 99.9-100.1 tolerance).
+-- The tolerance accounts for floating-point precision when users enter percentages
+-- that don't divide evenly (e.g., 33.33 + 33.33 + 33.34 = 100.0).
+-- All individual percentages must be positive (> 0.0) and no duplicate assets allowed.
 validateTargets : [TargetAllocation] -> Bool
 validateTargets targets =
   let total = foldl (\acc t -> acc + t.targetPct) 0.0 targets

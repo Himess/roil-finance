@@ -507,7 +507,7 @@ export async function handleDCAScheduleEvent(
     const [_newScheduleCid, executionCid] = execResult;
 
     // Execute swap
-    const amount = Number(payload.amountPerBuy);
+    const amount = decimalToNumber(payload.amountPerBuy);
     const swap = await smartRouter.executeSwap(
       payload.sourceAsset.symbol,
       payload.targetAsset.symbol,

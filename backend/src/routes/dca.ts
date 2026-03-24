@@ -69,7 +69,7 @@ dcaRouter.post('/', async (req: Request, res: Response) => {
 
     // Authorization: verify the caller can act as the specified user
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       if (user && !actAs.includes(user)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this party' });
       }
@@ -141,7 +141,7 @@ dcaRouter.put('/:id/amount', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const scheduleUser = schedule?.payload?.user;
       if (scheduleUser && !actAs.includes(scheduleUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
@@ -188,7 +188,7 @@ dcaRouter.put('/:id/frequency', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const scheduleUser = schedule?.payload?.user;
       if (scheduleUser && !actAs.includes(scheduleUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
@@ -230,7 +230,7 @@ dcaRouter.post('/:id/pause', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const scheduleUser = schedule?.payload?.user;
       if (scheduleUser && !actAs.includes(scheduleUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
@@ -277,7 +277,7 @@ dcaRouter.post('/:id/resume', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const scheduleUser = schedule?.payload?.user;
       if (scheduleUser && !actAs.includes(scheduleUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });
@@ -324,7 +324,7 @@ dcaRouter.delete('/:id', async (req: Request, res: Response) => {
     }
 
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       const scheduleUser = schedule?.payload?.user;
       if (scheduleUser && !actAs.includes(scheduleUser)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this DCA schedule' });

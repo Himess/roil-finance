@@ -29,7 +29,8 @@ export function rateLimiter(req: Request, res: Response, next: NextFunction): vo
 }
 
 /**
- * Reset internal rate-limiter state. Exposed for testing only.
+ * Reset internal rate-limiter state.
+ * @internal Test-only — not intended for production use.
  */
 export function _resetRateLimiterState(): void {
   requestCounts.clear();

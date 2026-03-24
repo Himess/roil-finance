@@ -75,7 +75,7 @@ transfersRouter.post('/swap', async (req: Request, res: Response) => {
 
     // Authorization: verify the caller can act as the specified user
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       if (user && !actAs.includes(user)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this party' });
       }
@@ -124,7 +124,7 @@ transfersRouter.post('/send', async (req: Request, res: Response) => {
 
     // Authorization: verify the caller can act as the sender
     if (config.network !== 'localnet') {
-      const actAs = (req as any).actAs as string[] || [];
+      const actAs = req.actAs || [];
       if (sender && !actAs.includes(sender)) {
         return res.status(403).json({ success: false, error: 'Not authorized for this party' });
       }
@@ -178,8 +178,9 @@ transfersRouter.get('/:party/export', requireParty('party'), async (req: Request
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename=roil-finance-${party!.slice(0, 8)}-history.csv`);
     res.send(csv);
-  } catch (err: any) {
-    res.status(500).json({ success: false, error: err.message });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ success: false, error: message });
   }
 });
 

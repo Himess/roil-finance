@@ -122,6 +122,9 @@ template TransferPreapproval
         create this with isActive = True
 
     -- Non-consuming check: can a transfer of given amount proceed?
+    -- Note: Transfer is allowed AT expiresAt (inclusive). The preapproval expires
+    -- AFTER this timestamp, not before it. This matches ExecutePreapprovedTransfer
+    -- which also uses <= for consistency.
     nonconsuming choice CanTransfer : Bool
       with
         amount   : Decimal

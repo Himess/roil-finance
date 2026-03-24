@@ -8,6 +8,7 @@ import { logger } from '../monitoring/logger.js';
 import { recordSnapshot } from '../services/performance-tracker.js';
 import { tokenTransferService } from '../services/token-transfer.js';
 import {
+  decimalToNumber,
   numberToDecimal,
   decimalAdd,
   decimalMul,
@@ -202,7 +203,7 @@ function checkPriceCondition(
   const currentPrice = prices[pc.conditionAsset];
   if (!currentPrice) return false;
 
-  const target = parseFloat(String(pc.targetPrice));
+  const target = decimalToNumber(String(pc.targetPrice));
   if (pc.conditionAction === 'sell_above') return currentPrice >= target;
   if (pc.conditionAction === 'buy_below') return currentPrice <= target;
   return false;
