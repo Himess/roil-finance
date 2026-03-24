@@ -3,6 +3,9 @@ module TestTokenTransfer where
 
 import Daml.Script
 import DA.List (head)
+import DA.Date
+import DA.Time
+import DA.TextMap (empty)
 import TokenTransfer
 
 -- | Test: Full transfer flow — create request, approve, verify log
@@ -24,13 +27,16 @@ testTransferFlow = script do
       instrumentId = "USDCx"
       instrumentAdmin = tokenAdmin
       amount = 500.0
-      status = Pending
+      status = TransferPending
       memo = "Payment for services"
-      createdAt = "2026-03-15T10:00:00Z"
+      createdAt = time (date 2026 Mar 15) 10 0 0
+      settlement = None
+      metadata = empty
 
   -- 2. Bob approves the transfer
   logCid <- submit bob do
-    exerciseCmd transferCid ApproveTransfer
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 10 5 0
 
   -- 3. Verify transfer log was created and is visible to both parties
   aliceLogs <- query @TransferLog alice
@@ -71,14 +77,16 @@ testSwapFlow = script do
       buyAdmin = usdcxAdmin
       buyAmount = 150.0
       minBuyAmount = 140.0
-      status = Pending
-      createdAt = "2026-03-15T11:00:00Z"
+      status = TransferPending
+      createdAt = time (date 2026 Mar 15) 11 0 0
+      settlement = None
+      metadata = empty
 
   -- 2. Platform executes the swap (after Cantex confirmation)
   logCid <- submit platform do
     exerciseCmd swapCid ExecuteSwap with
       actualBuyAmount = 149.5
-      executedAt = "2026-03-15T11:00:05Z"
+      executedAt = time (date 2026 Mar 15) 11 0 5
 
   -- 3. Verify swap log was created
   aliceLogs <- query @SwapLog alice
@@ -112,20 +120,22 @@ testRejectTransfer = script do
       instrumentId = "CBTC"
       instrumentAdmin = tokenAdmin
       amount = 0.1
-      status = Pending
+      status = TransferPending
       memo = "Attempted transfer"
-      createdAt = "2026-03-15T12:00:00Z"
+      createdAt = time (date 2026 Mar 15) 12 0 0
+      settlement = None
+      metadata = empty
 
   -- 2. Bob rejects the transfer
   rejectedCid <- submit bob do
     exerciseCmd transferCid RejectTransfer
 
-  -- 3. Verify the rejected request exists with Rejected status
+  -- 3. Verify the rejected request exists with TransferRejected status
   requests <- query @TransferRequest alice
   assertMsg "Alice should see 1 transfer request" (length requests == 1)
 
   let (_, reqPayload) = head requests
-  assertMsg "Status should be Rejected" (reqPayload.status == Rejected)
+  assertMsg "Status should be TransferRejected" (reqPayload.status == TransferRejected)
 
   -- 4. Verify no transfer log was created (transfer was rejected)
   logs <- query @TransferLog alice
@@ -151,9 +161,11 @@ testWithdrawTransfer = script do
       instrumentId = "CC"
       instrumentAdmin = tokenAdmin
       amount = 2000.0
-      status = Pending
+      status = TransferPending
       memo = "Will cancel this"
-      createdAt = "2026-03-15T13:00:00Z"
+      createdAt = time (date 2026 Mar 15) 13 0 0
+      settlement = None
+      metadata = empty
 
   -- 2. Alice (sender) withdraws the transfer
   submit alice do
@@ -186,8 +198,10 @@ testCancelSwap = script do
       buyAdmin = cbtcAdmin
       buyAmount = 0.02
       minBuyAmount = 0.018
-      status = Pending
-      createdAt = "2026-03-15T14:00:00Z"
+      status = TransferPending
+      createdAt = time (date 2026 Mar 15) 14 0 0
+      settlement = None
+      metadata = empty
 
   -- 2. Alice cancels the swap
   submit alice do
@@ -217,18 +231,24 @@ testMultipleOperations = script do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "CC"; instrumentAdmin = tokenAdmin
-      amount = 100.0; status = Pending
-      memo = "Transfer 1"; createdAt = "2026-03-15T10:00:00Z"
-  submit bob do exerciseCmd t1 ApproveTransfer
+      amount = 100.0; status = TransferPending
+      memo = "Transfer 1"; createdAt = time (date 2026 Mar 15) 10 0 0
+      settlement = None; metadata = empty
+  submit bob do
+    exerciseCmd t1 ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 10 1 0
 
   -- 2. Create and approve transfer 2: 200 USDCx
   t2 <- submitMulti [platform, alice] [] do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
-      amount = 200.0; status = Pending
-      memo = "Transfer 2"; createdAt = "2026-03-15T11:00:00Z"
-  submit bob do exerciseCmd t2 ApproveTransfer
+      amount = 200.0; status = TransferPending
+      memo = "Transfer 2"; createdAt = time (date 2026 Mar 15) 11 0 0
+      settlement = None; metadata = empty
+  submit bob do
+    exerciseCmd t2 ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 11 1 0
 
   -- 3. Execute a swap: 500 CC -> USDCx
   s1 <- submitMulti [platform, alice] [] do
@@ -237,11 +257,12 @@ testMultipleOperations = script do
       sellAsset = "CC"; sellAdmin = tokenAdmin; sellAmount = 500.0
       buyAsset = "USDCx"; buyAdmin = tokenAdmin; buyAmount = 75.0
       minBuyAmount = 70.0
-      status = Pending; createdAt = "2026-03-15T12:00:00Z"
+      status = TransferPending; createdAt = time (date 2026 Mar 15) 12 0 0
+      settlement = None; metadata = empty
   submit platform do
     exerciseCmd s1 ExecuteSwap with
       actualBuyAmount = 74.5
-      executedAt = "2026-03-15T12:00:05Z"
+      executedAt = time (date 2026 Mar 15) 12 0 5
 
   -- 4. Verify Alice sees 2 transfer logs and 1 swap log
   transferLogs <- query @TransferLog alice
@@ -271,12 +292,14 @@ testAuthorization = script do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
-      amount = 100.0; status = Pending
-      memo = "Auth test"; createdAt = "2026-03-15T15:00:00Z"
+      amount = 100.0; status = TransferPending
+      memo = "Auth test"; createdAt = time (date 2026 Mar 15) 15 0 0
+      settlement = None; metadata = empty
 
   -- Charlie (not receiver) should NOT be able to approve
   submitMustFail charlie do
-    exerciseCmd transferCid ApproveTransfer
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 15 1 0
 
   -- Charlie should NOT be able to reject either
   submitMustFail charlie do
@@ -287,7 +310,9 @@ testAuthorization = script do
     exerciseCmd transferCid WithdrawTransfer
 
   -- Bob (receiver) can approve
-  submit bob do exerciseCmd transferCid ApproveTransfer
+  submit bob do
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 15 2 0
 
   pure ()
 
@@ -307,12 +332,13 @@ testCBTCSwap = script do
       sellAsset = "USDCx"; sellAdmin = usdcxAdmin; sellAmount = 40.0
       buyAsset = "CBTC"; buyAdmin = cbtcAdmin; buyAmount = 0.001
       minBuyAmount = 0.0009
-      status = Pending; createdAt = "2026-03-15T16:00:00Z"
+      status = TransferPending; createdAt = time (date 2026 Mar 15) 16 0 0
+      settlement = None; metadata = empty
 
   logCid <- submit platform do
     exerciseCmd swapCid ExecuteSwap with
       actualBuyAmount = 0.00098
-      executedAt = "2026-03-15T16:00:10Z"
+      executedAt = time (date 2026 Mar 15) 16 0 10
 
   logs <- query @SwapLog alice
   assertMsg "Should have 1 CBTC swap log" (length logs == 1)
@@ -344,20 +370,22 @@ testSlippageRejection = script do
       buyAdmin = usdcxAdmin
       buyAmount = 150.0
       minBuyAmount = 145.0
-      status = Pending
-      createdAt = "2026-03-15T17:00:00Z"
+      status = TransferPending
+      createdAt = time (date 2026 Mar 15) 17 0 0
+      settlement = None
+      metadata = empty
 
   -- Should fail: actualBuyAmount (130.0) < minBuyAmount (145.0)
   submitMustFail platform do
     exerciseCmd swapCid ExecuteSwap with
       actualBuyAmount = 130.0
-      executedAt = "2026-03-15T17:00:05Z"
+      executedAt = time (date 2026 Mar 15) 17 0 5
 
   -- Should succeed: actualBuyAmount (148.0) >= minBuyAmount (145.0)
   logCid <- submit platform do
     exerciseCmd swapCid ExecuteSwap with
       actualBuyAmount = 148.0
-      executedAt = "2026-03-15T17:00:10Z"
+      executedAt = time (date 2026 Mar 15) 17 0 10
 
   logs <- query @SwapLog alice
   assertMsg "Should have 1 swap log" (length logs == 1)

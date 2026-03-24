@@ -3,6 +3,9 @@ module TestPortfolio where
 
 import Daml.Script
 import DA.List (head)
+import DA.Date
+import DA.Time
+import DA.TextMap (empty)
 import Types
 import Portfolio
 import DCA
@@ -51,6 +54,7 @@ testPortfolioLifecycle = script do
         , TargetAllocation cbtc  25.0
         ]
       triggerMode = DriftThreshold 5.0
+      now = time (date 2026 Mar 15) 09 0 0
 
   -- 3. Platform syncs holdings (simulating on-chain balance query)
   portfolioCid <- submit platform do
@@ -77,9 +81,11 @@ testPortfolioLifecycle = script do
         ]
 
   -- 6. Initiate rebalance (drift > 5% threshold)
-  (portfolioCid, rebalanceCid) <- submit platform do
+  result <- submit platform do
     exerciseCmd portfolioCid InitiateRebalance with
-      requestedAt = "2026-03-15T09:55:00Z"
+      requestedAt = time (date 2026 Mar 15) 09 55 0
+  let portfolioCid = result.portfolioCid
+  let rebalanceCid = result.requestCid
 
   -- 7. Platform sets swap legs
   rebalanceCid <- submit platform do
@@ -89,10 +95,10 @@ testPortfolioLifecycle = script do
         ]
 
   -- 8. Complete rebalance
-  logCid <- submit platform do
+  completeResult <- submit platform do
     exerciseCmd rebalanceCid CompleteRebalance with
       executedLegs = [ SwapLeg cc usdcx 200.0 198.5 ]
-      completedAt = "2026-03-15T10:00:00Z"
+      completedAt = time (date 2026 Mar 15) 10 0 0
 
   -- Verify log exists
   logs <- query @RebalanceLog alice
@@ -123,6 +129,7 @@ testTargetValidation = script do
         , TargetAllocation usdcx 30.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   pure ()
 
@@ -145,6 +152,7 @@ testMinAssets = script do
     exerciseCmd proposalCid AcceptProposal with
       targets = [ TargetAllocation cc 100.0 ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   pure ()
 
@@ -169,6 +177,7 @@ testUpdateTargets = script do
         , TargetAllocation usdcx 50.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   -- Update to 3-asset portfolio
   portfolioCid <- submit alice do
@@ -205,26 +214,32 @@ testDCALifecycle = script do
       frequency = Weekly
       totalExecutions = 0
       isActive = True
-      createdAt = "2026-03-15T10:00:00Z"
+      createdAt = time (date 2026 Mar 15) 10 0 0
 
   -- Execute DCA
-  (scheduleCid, execCid) <- submit platform do
-    exerciseCmd scheduleCid ExecuteDCA
+  execResult <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with
+      executedAt = time (date 2026 Mar 15) 10 0 0
+  let scheduleCid = execResult.scheduleCid
+  let execCid = execResult.executionCid
 
   -- Complete execution
-  logCid <- submit platform do
+  completeResult <- submit platform do
     exerciseCmd execCid CompleteDCAExecution with
       receivedAmount = 0.0025
-      completedAt = "2026-03-22T10:00:00Z"
+      completedAt = time (date 2026 Mar 22) 10 0 0
 
   -- Execute again
-  (scheduleCid, execCid) <- submit platform do
-    exerciseCmd scheduleCid ExecuteDCA
+  execResult2 <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with
+      executedAt = time (date 2026 Mar 22) 10 0 0
+  let scheduleCid = execResult2.scheduleCid
+  let execCid = execResult2.executionCid
 
-  logCid <- submit platform do
+  completeResult2 <- submit platform do
     exerciseCmd execCid CompleteDCAExecution with
       receivedAmount = 0.0024
-      completedAt = "2026-03-29T10:00:00Z"
+      completedAt = time (date 2026 Mar 29) 10 0 0
 
   -- Verify 2 execution logs
   logs <- query @DCALog alice
@@ -236,7 +251,8 @@ testDCALifecycle = script do
 
   -- Should fail: DCA is paused
   submitMustFail platform do
-    exerciseCmd scheduleCid ExecuteDCA
+    exerciseCmd scheduleCid ExecuteDCA with
+      executedAt = time (date 2026 Mar 29) 12 0 0
 
   pure ()
 
@@ -269,10 +285,11 @@ testRewardTracking = script do
   assertMsg "Should be Silver tier" (tier == Silver)
 
   -- Distribute reward and roll over
-  (newTrackerCid, payoutCid) <- submit platform do
+  distResult <- submit platform do
     exerciseCmd trackerCid DistributeReward with
       rewardAmount = 10.0
       newMonthId = "2026-04"
+      distributedAt = time (date 2026 Mar 31) 23 59 0
 
   -- Verify payout
   payouts <- query @RewardPayout alice
@@ -295,6 +312,7 @@ testFeaturedApp = script do
       isRegistered = False
       featuredAppRightCid = None
       totalActivities = 0
+      lastActivityAt = None
 
   -- Record a rebalance activity
   (configCid, activityCid1) <- submit platform do
@@ -303,7 +321,7 @@ testFeaturedApp = script do
       activityType = FeaturedApp.Rebalance
       activityId = "rebalance-001"
       description = "Portfolio rebalance executed"
-      timestamp = "2026-03-15T12:00:00Z"
+      now = time (date 2026 Mar 15) 12 0 0
 
   -- Verify Alice can see the activity
   aliceActivities <- query @FeaturedApp.ActivityRecord alice
@@ -316,7 +334,7 @@ testFeaturedApp = script do
       activityType = FeaturedApp.DCAExecution
       activityId = "dca-001"
       description = "DCA #1: 100 USDCx -> CBTC"
-      timestamp = "2026-03-15T13:00:00Z"
+      now = time (date 2026 Mar 15) 13 0 0
 
   -- Record activity for a different user
   (configCid, activityCid3) <- submit platform do
@@ -325,7 +343,7 @@ testFeaturedApp = script do
       activityType = FeaturedApp.CompoundExecution
       activityId = "compound-001"
       description = "Compound yield reinvested"
-      timestamp = "2026-03-15T14:00:00Z"
+      now = time (date 2026 Mar 15) 14 0 0
 
   -- Verify activity counts
   aliceActivities <- query @FeaturedApp.ActivityRecord alice
@@ -347,7 +365,7 @@ testFeaturedApp = script do
       activityType = FeaturedApp.RewardDistribution
       activityId = "reward-001"
       description = "Monthly rewards distributed: 10.0 CC"
-      timestamp = "2026-04-01T00:05:00Z"
+      now = time (date 2026 Apr 1) 0 5 0
 
   -- Verify total activities (4 recorded)
   allActivities <- query @FeaturedApp.ActivityRecord platform
@@ -378,6 +396,7 @@ testDeactivateReactivate = script do
         , TargetAllocation usdcx 50.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 09 0 0
 
   -- Sync holdings with drift to allow rebalance
   portfolioCid <- submit platform do
@@ -394,16 +413,16 @@ testDeactivateReactivate = script do
   -- Try to InitiateRebalance → should fail (isActive check)
   submitMustFail platform do
     exerciseCmd portfolioCid InitiateRebalance with
-      requestedAt = "2026-03-15T10:00:00Z"
+      requestedAt = time (date 2026 Mar 15) 10 0 0
 
   -- Reactivate the portfolio
   portfolioCid <- submit alice do
     exerciseCmd portfolioCid ActivatePortfolio
 
   -- InitiateRebalance → should succeed
-  (portfolioCid, rebalanceCid) <- submit platform do
+  result <- submit platform do
     exerciseCmd portfolioCid InitiateRebalance with
-      requestedAt = "2026-03-15T10:05:00Z"
+      requestedAt = time (date 2026 Mar 15) 10 5 0
 
   pure ()
 
@@ -430,6 +449,7 @@ testFailRebalance = script do
         , TargetAllocation usdcx 40.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   -- Sync holdings with drift
   portfolioCid <- submit platform do
@@ -440,9 +460,11 @@ testFailRebalance = script do
         ]
 
   -- Initiate rebalance
-  (portfolioCid, rebalanceCid) <- submit platform do
+  result <- submit platform do
     exerciseCmd portfolioCid InitiateRebalance with
-      requestedAt = "2026-03-15T11:00:00Z"
+      requestedAt = time (date 2026 Mar 15) 11 0 0
+  let portfolioCid = result.portfolioCid
+  let rebalanceCid = result.requestCid
 
   -- Fail the rebalance with a reason
   failedCid <- submit platform do
@@ -478,6 +500,7 @@ testBelowThresholdRebalance = script do
         , TargetAllocation usdcx 50.0
         ]
       triggerMode = DriftThreshold 10.0
+      now = time (date 2026 Mar 15) 10 0 0
 
   -- Sync holdings that create only 2% drift (below threshold of 10%)
   portfolioCid <- submit platform do
@@ -490,7 +513,7 @@ testBelowThresholdRebalance = script do
   -- Try InitiateRebalance → should fail (drift below threshold)
   submitMustFail platform do
     exerciseCmd portfolioCid InitiateRebalance with
-      requestedAt = "2026-03-15T12:00:00Z"
+      requestedAt = time (date 2026 Mar 15) 12 0 0
 
   pure ()
 
@@ -515,7 +538,7 @@ testDCACancel = script do
       frequency = Weekly
       totalExecutions = 0
       isActive = True
-      createdAt = "2026-03-15T10:00:00Z"
+      createdAt = time (date 2026 Mar 15) 10 0 0
 
   -- Cancel DCA
   submit alice do
@@ -523,7 +546,8 @@ testDCACancel = script do
 
   -- Verify it's archived (can't exercise on it anymore)
   submitMustFail platform do
-    exerciseCmd scheduleCid ExecuteDCA
+    exerciseCmd scheduleCid ExecuteDCA with
+      executedAt = time (date 2026 Mar 15) 12 0 0
 
   pure ()
 
@@ -548,7 +572,7 @@ testDCAUpdateAmount = script do
       frequency = Weekly
       totalExecutions = 0
       isActive = True
-      createdAt = "2026-03-15T10:00:00Z"
+      createdAt = time (date 2026 Mar 15) 10 0 0
 
   -- Update amount to 200.0
   scheduleCid <- submit alice do
@@ -578,12 +602,13 @@ testReferralSystem = script do
       referee = bob
       isActive = True
       referrerBonusPct = 10.0
+      createdAt = time (date 2026 Mar 15) 10 0 0
 
   -- Exercise CreditReferrer → creates ReferralCredit
   creditCid <- submit platform do
     exerciseCmd referralCid CreditReferrer with
       refereeTxValue = 500.0
-      timestamp = "2026-03-15T12:00:00Z"
+      creditedAt = time (date 2026 Mar 15) 12 0 0
 
   -- Verify referral is still active (nonconsuming choice)
   referrals <- query @Referral alice
@@ -599,7 +624,7 @@ testReferralSystem = script do
   creditCid2 <- submit platform do
     exerciseCmd referralCid CreditReferrer with
       refereeTxValue = 200.0
-      timestamp = "2026-03-15T13:00:00Z"
+      creditedAt = time (date 2026 Mar 15) 13 0 0
 
   credits <- query @ReferralCredit alice
   assertMsg "Should have 2 referral credits" (length credits == 2)
@@ -629,6 +654,7 @@ testNegativeTargetRejection = script do
         , TargetAllocation usdcx 110.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   pure ()
 
@@ -646,7 +672,7 @@ testCompoundConfig = script do
       strategy = "portfolio-targets"
       minYieldThreshold = 10.0
       isEnabled = True
-      lastCompoundAt = ""
+      lastCompoundAt = None
       totalCompounded = 0.0
 
   -- User updates config
@@ -660,7 +686,7 @@ testCompoundConfig = script do
   configCid <- submit platform do
     exerciseCmd configCid RecordCompound with
       compoundedAmount = 25.0
-      compoundedAt = "2026-03-17T12:00:00Z"
+      compoundedAt = time (date 2026 Mar 17) 12 0 0
 
   -- Verify state
   configs <- query @CompoundConfig alice
@@ -686,7 +712,7 @@ testUserPreferences = script do
       slippageTolerance = 0.02
       notificationsOn = True
       autoRebalanceOn = True
-      createdAt = "2026-03-17T00:00:00Z"
+      createdAt = time (date 2026 Mar 17) 0 0 0
 
   -- User updates preferences
   prefsCid <- submit alice do
@@ -727,5 +753,6 @@ testDuplicateAssetRejection = script do
         , TargetAllocation cc 50.0
         ]
       triggerMode = Manual
+      now = time (date 2026 Mar 15) 10 0 0
 
   pure ()

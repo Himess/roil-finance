@@ -7,4 +7,4 @@ dependencies:
   - daml-stdlib
   - daml-script
 data-dependencies:
-  - ../main/.daml/dist/roil-finance-0.1.0.dar
+  - ../main/.daml/dist/roil-finance-0.2.0.dar
