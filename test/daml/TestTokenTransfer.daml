@@ -6,6 +6,8 @@ import DA.List (head)
 import DA.Date
 import DA.Time
 import DA.TextMap (empty)
+import qualified DA.TextMap
+import Types (SettlementInfo(..))
 import TokenTransfer
 
 -- | Test: Full transfer flow — create request, approve, verify log
@@ -389,5 +391,140 @@ testSlippageRejection = script do
 
   logs <- query @SwapLog alice
   assertMsg "Should have 1 swap log" (length logs == 1)
+
+  pure ()
+
+-- | Test: Settlement deadline validation — approve after deadline should fail
+testSettlementDeadlineValidation : Script ()
+testSettlementDeadlineValidation = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let deadline = time (date 2026 Mar 15) 12 0 0
+  let settlementInfo = SettlementInfo with
+        executor = platform
+        allocateBefore = deadline
+        settleBefore = deadline
+
+  -- Create transfer with settlement deadline
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform
+      sender = alice
+      receiver = bob
+      instrumentId = "USDCx"
+      instrumentAdmin = tokenAdmin
+      amount = 100.0
+      status = TransferPending
+      memo = "Deadline test"
+      createdAt = time (date 2026 Mar 15) 10 0 0
+      settlement = Some settlementInfo
+      metadata = empty
+
+  -- Approve BEFORE deadline → should succeed (sanity check)
+  -- We need a second transfer for the failure case, so let's test failure first
+  -- Try to approve AFTER the deadline → should fail
+  submitMustFail bob do
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 13 0 0  -- 1 hour past deadline
+
+  -- Approve BEFORE deadline → should succeed
+  logCid <- submit bob do
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 11 0 0  -- 1 hour before deadline
+
+  -- Verify log was created
+  logs <- query @TransferLog alice
+  assertMsg "Should have 1 transfer log" (length logs == 1)
+
+  pure ()
+
+-- | Test: Transfer with metadata — verify metadata preserved in TransferLog
+testTransferWithMetadata : Script ()
+testTransferWithMetadata = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let meta = DA.TextMap.fromList [("purpose", "invoice-42"), ("category", "services")]
+
+  -- Create transfer with metadata
+  transferCid <- submitMulti [platform, alice] [] do
+    createCmd TransferRequest with
+      platform
+      sender = alice
+      receiver = bob
+      instrumentId = "CC"
+      instrumentAdmin = tokenAdmin
+      amount = 250.0
+      status = TransferPending
+      memo = "With metadata"
+      createdAt = time (date 2026 Mar 15) 10 0 0
+      settlement = None
+      metadata = meta
+
+  -- Approve the transfer
+  logCid <- submit bob do
+    exerciseCmd transferCid ApproveTransfer with
+      approvedAt = time (date 2026 Mar 15) 10 5 0
+
+  -- Verify metadata is preserved in TransferLog
+  logs <- query @TransferLog alice
+  assertMsg "Should have 1 transfer log" (length logs == 1)
+  let (_, logPayload) = head logs
+  assertMsg "Log metadata should have purpose"
+    (DA.TextMap.lookup "purpose" logPayload.metadata == Some "invoice-42")
+  assertMsg "Log metadata should have category"
+    (DA.TextMap.lookup "category" logPayload.metadata == Some "services")
+  assertMsg "Log amount should be 250.0" (logPayload.amount == 250.0)
+
+  pure ()
+
+-- | Test: Swap with metadata — verify metadata preserved in SwapLog
+testSwapWithMetadata : Script ()
+testSwapWithMetadata = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  ccAdmin <- allocateParty "CCAdmin"
+  usdcxAdmin <- allocateParty "USDCxAdmin"
+
+  let meta = DA.TextMap.fromList [("rebalance-id", "reb-123"), ("leg", "1-of-3")]
+
+  -- Create swap with metadata
+  swapCid <- submitMulti [platform, alice] [] do
+    createCmd SwapRequest with
+      platform
+      user = alice
+      sellAsset = "CC"
+      sellAdmin = ccAdmin
+      sellAmount = 500.0
+      buyAsset = "USDCx"
+      buyAdmin = usdcxAdmin
+      buyAmount = 75.0
+      minBuyAmount = 70.0
+      status = TransferPending
+      createdAt = time (date 2026 Mar 15) 14 0 0
+      settlement = None
+      metadata = meta
+
+  -- Execute the swap
+  logCid <- submit platform do
+    exerciseCmd swapCid ExecuteSwap with
+      actualBuyAmount = 74.0
+      executedAt = time (date 2026 Mar 15) 14 0 5
+
+  -- Verify metadata is preserved in SwapLog
+  logs <- query @SwapLog alice
+  assertMsg "Should have 1 swap log" (length logs == 1)
+  let (_, logPayload) = head logs
+  assertMsg "Log metadata should have rebalance-id"
+    (DA.TextMap.lookup "rebalance-id" logPayload.metadata == Some "reb-123")
+  assertMsg "Log metadata should have leg"
+    (DA.TextMap.lookup "leg" logPayload.metadata == Some "1-of-3")
+  assertMsg "Log sell amount should be 500.0" (logPayload.sellAmount == 500.0)
+  assertMsg "Log buy amount should be 74.0" (logPayload.buyAmount == 74.0)
 
   pure ()

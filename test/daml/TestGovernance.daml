@@ -1,0 +1,879 @@
+-- | Tests for Governance and TransferPreapproval contracts
+module TestGovernance where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import Types
+import Governance
+import TransferPreapproval
+
+-- | Helper: create a default RoilAdmin for tests
+mkDefaultAdmin : Party -> [AssetId] -> Time -> RoilAdmin
+mkDefaultAdmin platform assets now = RoilAdmin with
+  platform
+  isPaused = False
+  allowedAssets = assets
+  rebalanceFeePct = 1.0
+  minPortfolioValue = 100.0
+  isFrozen = False
+  updatedAt = now
+
+-- | Helper: create test asset IDs
+mkAsset : Party -> Text -> AssetId
+mkAsset admin symbol = AssetId with symbol; admin
+
+-- ============================================================================
+-- GOVERNANCE TESTS
+-- ============================================================================
+
+-- | Test 1: Create RoilAdmin — verify fields are set correctly
+testCreateRoilAdmin : Script ()
+testCreateRoilAdmin = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let now = time (date 2026 Mar 15) 10 0 0
+
+  adminCid <- submit platform do
+    createCmd RoilAdmin with
+      platform
+      isPaused = False
+      allowedAssets = [cc, usdcx]
+      rebalanceFeePct = 2.5
+      minPortfolioValue = 50.0
+      isFrozen = False
+      updatedAt = now
+
+  -- Query and verify all fields
+  admins <- query @RoilAdmin platform
+  assertMsg "Should have 1 admin config" (length admins == 1)
+  let (_, admin) = head admins
+  assertMsg "Fee rate should be 2.5" (admin.rebalanceFeePct == 2.5)
+  assertMsg "Min portfolio value should be 50.0" (admin.minPortfolioValue == 50.0)
+  assertMsg "Should not be paused" (not admin.isPaused)
+  assertMsg "Should not be frozen" (not admin.isFrozen)
+  assertMsg "Should have 2 allowed assets" (length admin.allowedAssets == 2)
+
+  pure ()
+
+-- | Test 2: Pause and resume rebalancing — verify CanRebalance reflects state
+testPauseResume : Script ()
+testPauseResume = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Verify CanRebalance is True initially
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should be able to rebalance initially" canRebalance
+
+  -- Pause
+  adminCid <- submit platform do
+    exerciseCmd adminCid PauseAllRebalancing with pausedAt = t1
+
+  -- Verify CanRebalance is False after pause
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should NOT be able to rebalance when paused" (not canRebalance)
+
+  -- Resume
+  adminCid <- submit platform do
+    exerciseCmd adminCid ResumeRebalancing with resumedAt = t2
+
+  -- Verify CanRebalance is True after resume
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should be able to rebalance after resume" canRebalance
+
+  pure ()
+
+-- | Test 3: Emergency freeze — CanRebalance returns False, resume without unfreeze fails
+testEmergencyFreeze : Script ()
+testEmergencyFreeze = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Emergency freeze
+  adminCid <- submit platform do
+    exerciseCmd adminCid EmergencyFreeze with
+      frozenAt = t1
+      reason = "Security incident detected"
+
+  -- Verify CanRebalance is False
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should NOT be able to rebalance when frozen" (not canRebalance)
+
+  -- Attempt to ResumeRebalancing while frozen — should fail
+  -- (EmergencyFreeze sets isPaused = True, but ResumeRebalancing checks "not isFrozen")
+  submitMustFail platform do
+    exerciseCmd adminCid ResumeRebalancing with resumedAt = t2
+
+  -- Verify CanRebalance is STILL False
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should still NOT be able to rebalance (frozen)" (not canRebalance)
+
+  pure ()
+
+-- | Test 4: Freeze then unfreeze — operations allowed after unfreeze
+testUnfreeze : Script ()
+testUnfreeze = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+  let t3 = time (date 2026 Mar 15) 10 15 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Freeze
+  adminCid <- submit platform do
+    exerciseCmd adminCid EmergencyFreeze with
+      frozenAt = t1
+      reason = "Suspicious activity"
+
+  -- Verify frozen
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should be blocked when frozen" (not canRebalance)
+
+  -- Unfreeze
+  adminCid <- submit platform do
+    exerciseCmd adminCid Unfreeze with
+      unfrozenAt = t2
+      reason = "Investigation complete, all clear"
+
+  -- Verify operations allowed
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Should be able to rebalance after unfreeze" canRebalance
+
+  -- Verify fee update works after unfreeze (not blocked)
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 3.0
+      changedAt = t3
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Fee should be updated to 3.0" (admin.rebalanceFeePct == 3.0)
+
+  pure ()
+
+-- | Test 5: Update fee rate — verify new rate persists
+testUpdateFeeRate : Script ()
+testUpdateFeeRate = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Update fee to 5.0%
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 5.0
+      changedAt = t1
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Fee rate should be 5.0" (admin.rebalanceFeePct == 5.0)
+  assertMsg "updatedAt should reflect change time" (admin.updatedAt == t1)
+
+  pure ()
+
+-- | Test 6: Invalid fee rates — negative and >100% should fail
+testUpdateFeeRateInvalid : Script ()
+testUpdateFeeRateInvalid = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Negative fee should fail
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = -1.0
+      changedAt = t1
+
+  -- Fee > 100% should fail
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 101.0
+      changedAt = t1
+
+  -- Boundary: 0.0 should succeed
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 0.0
+      changedAt = t1
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Fee rate should be 0.0" (admin.rebalanceFeePct == 0.0)
+
+  -- Boundary: 100.0 should succeed
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 100.0
+      changedAt = t1
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Fee rate should be 100.0" (admin.rebalanceFeePct == 100.0)
+
+  pure ()
+
+-- | Test 7: Update allowed assets — add and remove assets
+testUpdateAllowedAssets : Script ()
+testUpdateAllowedAssets = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let cbtc = mkAsset tokenAdmin "CBTC"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Add CBTC to allowed assets
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateAllowedAssets with
+      newAllowedAssets = [cc, usdcx, cbtc]
+      changedAt = t1
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Should have 3 allowed assets" (length admin.allowedAssets == 3)
+
+  -- Remove USDCx (only CC and CBTC remain)
+  adminCid <- submit platform do
+    exerciseCmd adminCid UpdateAllowedAssets with
+      newAllowedAssets = [cc, cbtc]
+      changedAt = t2
+
+  admins <- query @RoilAdmin platform
+  let (_, admin) = head admins
+  assertMsg "Should have 2 allowed assets" (length admin.allowedAssets == 2)
+
+  -- Empty list should fail (ensure constraint: not (null allowedAssets))
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateAllowedAssets with
+      newAllowedAssets = []
+      changedAt = t2
+
+  pure ()
+
+-- | Test 8: IsAssetAllowed — check allowed vs not-allowed assets
+testIsAssetAllowed : Script ()
+testIsAssetAllowed = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let cbtc = mkAsset tokenAdmin "CBTC"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- CC is allowed
+  isAllowed <- submit platform do
+    exerciseCmd adminCid IsAssetAllowed with asset = cc
+  assertMsg "CC should be allowed" isAllowed
+
+  -- USDCx is allowed
+  isAllowed <- submit platform do
+    exerciseCmd adminCid IsAssetAllowed with asset = usdcx
+  assertMsg "USDCx should be allowed" isAllowed
+
+  -- CBTC is NOT allowed
+  isAllowed <- submit platform do
+    exerciseCmd adminCid IsAssetAllowed with asset = cbtc
+  assertMsg "CBTC should NOT be allowed" (not isAllowed)
+
+  pure ()
+
+-- | Test 9: Audit log — verify GovernanceAuditLog created after admin actions
+testAuditLog : Script ()
+testAuditLog = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- No audit logs initially
+  logs <- query @GovernanceAuditLog platform
+  assertMsg "Should have 0 audit logs initially" (length logs == 0)
+
+  -- Emergency freeze creates an audit log
+  adminCid <- submit platform do
+    exerciseCmd adminCid EmergencyFreeze with
+      frozenAt = t1
+      reason = "Potential exploit"
+
+  logs <- query @GovernanceAuditLog platform
+  assertMsg "Should have 1 audit log after freeze" (length logs == 1)
+  let (_, log) = head logs
+  assertMsg "Action should be EMERGENCY_FREEZE" (log.action == "EMERGENCY_FREEZE")
+  assertMsg "Reason should match" (log.reason == "Potential exploit")
+  assertMsg "Timestamp should match" (log.timestamp == t1)
+
+  -- Unfreeze creates another audit log
+  adminCid <- submit platform do
+    exerciseCmd adminCid Unfreeze with
+      unfrozenAt = t2
+      reason = "All clear after investigation"
+
+  logs <- query @GovernanceAuditLog platform
+  assertMsg "Should have 2 audit logs after unfreeze" (length logs == 2)
+
+  pure ()
+
+-- | Test 10: Pause while frozen — verify behavior
+testPauseWhileFrozen : Script ()
+testPauseWhileFrozen = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+
+  adminCid <- submit platform do
+    createCmd (mkDefaultAdmin platform [cc, usdcx] t0)
+
+  -- Freeze the platform
+  adminCid <- submit platform do
+    exerciseCmd adminCid EmergencyFreeze with
+      frozenAt = t1
+      reason = "Critical bug found"
+
+  -- Attempt to pause while frozen — should fail ("Cannot pause while frozen")
+  -- Note: EmergencyFreeze already sets isPaused=True, but even if it didn't,
+  -- the PauseAllRebalancing choice checks "not isFrozen"
+  submitMustFail platform do
+    exerciseCmd adminCid PauseAllRebalancing with pausedAt = t2
+
+  -- UpdateFeeRate should also fail while frozen
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateFeeRate with
+      newFeePct = 3.0
+      changedAt = t2
+
+  -- UpdateAllowedAssets should also fail while frozen
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateAllowedAssets with
+      newAllowedAssets = [cc]
+      changedAt = t2
+
+  -- UpdateMinPortfolioValue should also fail while frozen
+  submitMustFail platform do
+    exerciseCmd adminCid UpdateMinPortfolioValue with
+      newMinValue = 200.0
+      changedAt = t2
+
+  -- CanRebalance should return False
+  canRebalance <- submit platform do
+    exerciseCmd adminCid CanRebalance
+  assertMsg "Cannot rebalance while frozen" (not canRebalance)
+
+  pure ()
+
+-- ============================================================================
+-- TRANSFER PREAPPROVAL TESTS
+-- ============================================================================
+
+-- | Helper: create a standard preapproval for tests
+mkPreapproval : Party -> Party -> Time -> Time -> TransferPreapproval
+mkPreapproval sender receiver created expires = TransferPreapproval with
+  sender
+  receiver
+  instrumentId = "USDCx"
+  maxAmountPerTransfer = 1000.0
+  expiresAt = expires
+  isActive = True
+  totalTransferred = 0.0
+  totalTransferCount = 0
+  createdAt = created
+
+-- | Test 11: Create preapproval — verify fields
+testCreatePreapproval : Script ()
+testCreatePreapproval = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd TransferPreapproval with
+      sender = platform
+      receiver = alice
+      instrumentId = "USDCx"
+      maxAmountPerTransfer = 500.0
+      expiresAt = expiry
+      isActive = True
+      totalTransferred = 0.0
+      totalTransferCount = 0
+      createdAt = t0
+
+  -- Query and verify
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Should have 1 preapproval" (length preapprovals == 1)
+  let (_, pa) = head preapprovals
+  assertMsg "Instrument should be USDCx" (pa.instrumentId == "USDCx")
+  assertMsg "Max amount should be 500.0" (pa.maxAmountPerTransfer == 500.0)
+  assertMsg "Should be active" pa.isActive
+  assertMsg "Total transferred should be 0.0" (pa.totalTransferred == 0.0)
+  assertMsg "Total transfer count should be 0" (pa.totalTransferCount == 0)
+
+  pure ()
+
+-- | Test 12: Execute pre-approved transfer — within limits, verify log created
+testExecutePreapproved : Script ()
+testExecutePreapproved = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Execute transfer
+  result <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 250.0
+      memo = "Monthly rebalance allocation"
+      executedAt = t1
+
+  -- Verify log was created
+  logs <- query @PreapprovedTransferLog alice
+  assertMsg "Should have 1 transfer log" (length logs == 1)
+  let (_, log) = head logs
+  assertMsg "Log amount should be 250.0" (log.amount == 250.0)
+  assertMsg "Log memo should match" (log.memo == "Monthly rebalance allocation")
+  assertMsg "Log sender should be platform" (log.sender == platform)
+  assertMsg "Log receiver should be alice" (log.receiver == alice)
+
+  -- Verify preapproval totals updated
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Should have 1 preapproval" (length preapprovals == 1)
+  let (_, pa) = head preapprovals
+  assertMsg "Total transferred should be 250.0" (pa.totalTransferred == 250.0)
+  assertMsg "Total transfer count should be 1" (pa.totalTransferCount == 1)
+
+  pure ()
+
+-- | Test 13: Exceed max amount per transfer — should fail
+testExceedLimit : Script ()
+testExceedLimit = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Try to transfer 1500 when max is 1000 — should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 1500.0
+      memo = "Exceeds limit"
+      executedAt = t1
+
+  -- Zero amount should fail (must be positive)
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 0.0
+      memo = "Zero amount"
+      executedAt = t1
+
+  -- Negative amount should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = -100.0
+      memo = "Negative amount"
+      executedAt = t1
+
+  -- Exactly at limit should succeed
+  result <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 1000.0
+      memo = "Exactly at limit"
+      executedAt = t1
+
+  pure ()
+
+-- | Test 14: Expired preapproval — execute after expiry should fail
+testExpiredPreapproval : Script ()
+testExpiredPreapproval = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let expiry = time (date 2026 Mar 20) 10 0 0
+  let afterExpiry = time (date 2026 Mar 25) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Try to execute after expiry — should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "Late transfer"
+      executedAt = afterExpiry
+
+  -- Execute before expiry — should succeed
+  result <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "On-time transfer"
+      executedAt = expiry  -- exactly at expiry should work (<=)
+
+  pure ()
+
+-- | Test 15: Receiver revokes preapproval — verify archived
+testRevokePreapproval : Script ()
+testRevokePreapproval = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Receiver (alice) revokes
+  submit alice do
+    exerciseCmd preapprovalCid RevokePreapproval
+
+  -- Verify archived — no preapprovals left
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Should have 0 preapprovals after revoke" (length preapprovals == 0)
+
+  -- Trying to execute on archived contract should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "After revoke"
+      executedAt = t1
+
+  pure ()
+
+-- | Test 16: Sender revokes preapproval
+testSenderRevoke : Script ()
+testSenderRevoke = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Sender (platform) revokes
+  submit platform do
+    exerciseCmd preapprovalCid SenderRevokePreapproval
+
+  -- Verify archived
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Should have 0 preapprovals after sender revoke" (length preapprovals == 0)
+
+  -- Trying to execute should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "After sender revoke"
+      executedAt = t1
+
+  pure ()
+
+-- | Test 17: Update transfer limit
+testUpdateLimit : Script ()
+testUpdateLimit = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Receiver (alice) updates limit from 1000 to 2000
+  preapprovalCid <- submit alice do
+    exerciseCmd preapprovalCid UpdateLimit with
+      newMaxAmount = 2000.0
+      updatedAt = t1
+
+  -- Verify new limit
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "Max amount should be 2000.0" (pa.maxAmountPerTransfer == 2000.0)
+
+  -- Transfer of 1500 should now succeed (was above old limit of 1000)
+  result <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 1500.0
+      memo = "Large transfer after limit increase"
+      executedAt = t2
+
+  -- Invalid limit (0 or negative) should fail
+  let preapprovalCid2 = result.preapprovalCid
+  submitMustFail alice do
+    exerciseCmd preapprovalCid2 UpdateLimit with
+      newMaxAmount = 0.0
+      updatedAt = t2
+
+  submitMustFail alice do
+    exerciseCmd preapprovalCid2 UpdateLimit with
+      newMaxAmount = -50.0
+      updatedAt = t2
+
+  pure ()
+
+-- | Test 18: Deactivate, try transfer (fail), reactivate, try transfer (succeed)
+testDeactivateReactivate : Script ()
+testDeactivateReactivate = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Deactivate
+  preapprovalCid <- submit alice do
+    exerciseCmd preapprovalCid DeactivatePreapproval
+
+  -- Verify deactivated
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "Should be inactive" (not pa.isActive)
+
+  -- Try to transfer while inactive — should fail
+  submitMustFail platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "While inactive"
+      executedAt = t1
+
+  -- Deactivate again should fail (already inactive)
+  submitMustFail alice do
+    exerciseCmd preapprovalCid DeactivatePreapproval
+
+  -- Reactivate
+  preapprovalCid <- submit alice do
+    exerciseCmd preapprovalCid ReactivatePreapproval with
+      reactivatedAt = t1
+
+  -- Reactivate again should fail (already active)
+  submitMustFail alice do
+    exerciseCmd preapprovalCid ReactivatePreapproval with
+      reactivatedAt = t1
+
+  -- Transfer should succeed now
+  result <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 100.0
+      memo = "After reactivation"
+      executedAt = t2
+
+  logs <- query @PreapprovedTransferLog alice
+  assertMsg "Should have 1 transfer log" (length logs == 1)
+
+  pure ()
+
+-- | Test 19: CanTransfer nonconsuming check
+testCanTransfer : Script ()
+testCanTransfer = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let expiry = time (date 2026 Mar 20) 10 0 0
+  let afterExpiry = time (date 2026 Mar 25) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Valid transfer check — should return True
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = 500.0
+      checkAt = t1
+  assertMsg "Should be able to transfer 500 within limits" canTransfer
+
+  -- Amount exceeds limit — should return False
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = 1500.0
+      checkAt = t1
+  assertMsg "Should NOT be able to transfer above limit" (not canTransfer)
+
+  -- After expiry — should return False
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = 500.0
+      checkAt = afterExpiry
+  assertMsg "Should NOT be able to transfer after expiry" (not canTransfer)
+
+  -- Zero amount — should return False
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = 0.0
+      checkAt = t1
+  assertMsg "Should NOT be able to transfer zero amount" (not canTransfer)
+
+  -- Negative amount — should return False
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = -10.0
+      checkAt = t1
+  assertMsg "Should NOT be able to transfer negative amount" (not canTransfer)
+
+  -- Deactivate, then check — should return False
+  preapprovalCid <- submit alice do
+    exerciseCmd preapprovalCid DeactivatePreapproval
+
+  canTransfer <- submit platform do
+    exerciseCmd preapprovalCid CanTransfer with
+      amount = 500.0
+      checkAt = t1
+  assertMsg "Should NOT be able to transfer when inactive" (not canTransfer)
+
+  pure ()
+
+-- | Test 20: Multiple transfers — verify totalTransferred and totalTransferCount increment
+testMultipleTransfers : Script ()
+testMultipleTransfers = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+  let t3 = time (date 2026 Mar 15) 16 0 0
+  let expiry = time (date 2026 Jun 15) 10 0 0
+
+  preapprovalCid <- submitMulti [platform, alice] [] do
+    createCmd (mkPreapproval platform alice t0 expiry)
+
+  -- Transfer 1: 200.0
+  result1 <- submit platform do
+    exerciseCmd preapprovalCid ExecutePreapprovedTransfer with
+      amount = 200.0
+      memo = "Transfer 1"
+      executedAt = t1
+
+  -- Verify after first transfer
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa1) = head preapprovals
+  assertMsg "Total transferred should be 200.0 after 1st" (pa1.totalTransferred == 200.0)
+  assertMsg "Transfer count should be 1" (pa1.totalTransferCount == 1)
+
+  -- Transfer 2: 350.0
+  let preapprovalCid2 = result1.preapprovalCid
+  result2 <- submit platform do
+    exerciseCmd preapprovalCid2 ExecutePreapprovedTransfer with
+      amount = 350.0
+      memo = "Transfer 2"
+      executedAt = t2
+
+  -- Verify after second transfer
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa2) = head preapprovals
+  assertMsg "Total transferred should be 550.0 after 2nd" (pa2.totalTransferred == 550.0)
+  assertMsg "Transfer count should be 2" (pa2.totalTransferCount == 2)
+
+  -- Transfer 3: 1000.0 (exactly at per-transfer limit)
+  let preapprovalCid3 = result2.preapprovalCid
+  result3 <- submit platform do
+    exerciseCmd preapprovalCid3 ExecutePreapprovedTransfer with
+      amount = 1000.0
+      memo = "Transfer 3 — max single"
+      executedAt = t3
+
+  -- Verify after third transfer
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa3) = head preapprovals
+  assertMsg "Total transferred should be 1550.0 after 3rd" (pa3.totalTransferred == 1550.0)
+  assertMsg "Transfer count should be 3" (pa3.totalTransferCount == 3)
+
+  -- Verify all 3 logs exist
+  logs <- query @PreapprovedTransferLog alice
+  assertMsg "Should have 3 transfer logs" (length logs == 3)
+
+  pure ()
