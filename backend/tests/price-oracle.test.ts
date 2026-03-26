@@ -16,12 +16,17 @@ vi.mock('../src/cantex.js', () => ({
 }));
 
 // Mock config
-vi.mock('../src/config.js', () => ({
-  config: {
-    network: 'localnet',
-    cantexApiUrl: 'http://localhost:6100',
-  },
-}));
+vi.mock('../src/config.js', async (importOriginal) => {
+  const actual = await importOriginal() as Record<string, unknown>;
+  return {
+    ...actual,
+    config: {
+      ...(actual.config as Record<string, unknown>),
+      network: 'localnet',
+      cantexApiUrl: 'http://localhost:6100',
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Tests

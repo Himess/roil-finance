@@ -522,7 +522,7 @@ describe('Route-level tests', () => {
 
     it('should return 404 for unknown template', async () => {
       const res = await request(app, 'POST', '/api/portfolio/from-template', {
-        user: 'test-user',
+        user: 'test-user::1220abcdef0123456789',
         templateId: 'nonexistent',
       });
       expect(res.status).toBe(404);
