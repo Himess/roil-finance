@@ -206,7 +206,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
     }
 
     logger.warn('Auth failure: invalid token', {
-      ip: req.socket.remoteAddress || 'unknown',
+      ip: req.socket?.remoteAddress || req.ip || 'unknown',
       path: req.path,
       reason: failureReason,
     });
@@ -221,7 +221,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   } else if (config.network !== 'localnet') {
     // No token in non-localnet mode
     logger.warn('Auth failure: missing authorization header', {
-      ip: req.socket.remoteAddress || 'unknown',
+      ip: req.socket?.remoteAddress || req.ip || 'unknown',
       path: req.path,
       reason: 'missing Authorization header',
     });
