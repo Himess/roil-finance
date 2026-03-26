@@ -13,6 +13,8 @@ import { compoundRouter } from './routes/compound.js';
 import { transfersRouter } from './routes/transfers.js';
 import { metricsRouter } from './routes/metrics.js';
 import { adminRouter } from './routes/admin.js';
+import { swapRouter } from './routes/swap.js';
+import { whitelistRouter } from './routes/whitelist.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
 // For multi-instance production deployment with Redis:
 // import { rateLimiter } from './middleware/rate-limiter.js';
@@ -96,6 +98,8 @@ export function createApp(): express.Express {
   app.use('/api/compound', compoundRouter);
   app.use('/api/transfers', transfersRouter);
   app.use('/api/admin', adminRouter);
+  app.use('/api/swap', swapRouter);
+  app.use('/api/whitelist', whitelistRouter);
   app.use('/metrics', metricsRouter);
 
   // Serve OpenAPI specification as raw YAML

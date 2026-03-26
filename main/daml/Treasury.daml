@@ -1,0 +1,127 @@
+-- | Treasury swap engine for Roil Finance — Canton Network aligned.
+-- Platform acts as market maker with oracle-based pricing and a configurable spread.
+-- Every swap is logged immutably for audit trail.
+--
+-- The TreasuryPool holds aggregate balances and collects spread fees.
+-- The backend quotes prices via an external oracle (e.g., Chainlink or Pyth)
+-- and submits RequestTreasurySwap with the computed amounts.
+module Treasury where
+
+import Types
+
+-- | Result of a treasury swap execution.
+-- Contains both the updated pool and the immutable swap log.
+data TreasurySwapResult = TreasurySwapResult
+  with
+    poolCid : ContractId TreasuryPool
+    logCid  : ContractId TreasurySwapLog
+  deriving (Eq, Show)
+
+-- | Treasury pool managed by the platform.
+-- Acts as a market maker: users swap against the pool at oracle price minus spread.
+-- 0.5% default spread on every swap.
+template TreasuryPool
+  with
+    platform           : Party
+    balances           : [(AssetId, Decimal)]  -- token balances held by treasury
+    spreadRate         : Decimal               -- 0.005 = 0.5%
+    totalSwapsExecuted : Int
+    totalSpreadEarned  : Decimal               -- cumulative spread earned (in USDCx terms)
+    isPaused           : Bool
+    lastUpdatedAt      : Time
+  where
+    signatory platform
+    ensure spreadRate > 0.0 && spreadRate < 0.1  -- max 10% spread
+
+    -- | User requests a swap against the treasury pool.
+    -- The backend computes fromAmount, toAmount, spreadAmount, and oraclePrice
+    -- off-chain, then exercises this choice.
+    choice RequestTreasurySwap : TreasurySwapResult
+      with
+        user         : Party
+        fromAsset    : AssetId
+        toAsset      : AssetId
+        fromAmount   : Decimal
+        toAmount     : Decimal      -- expected output (after spread)
+        oraclePrice  : Decimal      -- price at quote time
+        spreadAmount : Decimal      -- fee taken
+        executedAt   : Time
+      controller platform
+      do
+        -- Validate treasury is not paused
+        assertMsg "Treasury is paused" (not isPaused)
+        -- Validate amounts
+        assertMsg "From amount must be positive" (fromAmount > 0.0)
+        assertMsg "To amount must be positive" (toAmount > 0.0)
+        assertMsg "Spread amount must be non-negative" (spreadAmount >= 0.0)
+        assertMsg "Oracle price must be positive" (oraclePrice > 0.0)
+        -- Create immutable swap log
+        logCid <- create TreasurySwapLog with
+          platform; user; fromAsset; toAsset
+          fromAmount; toAmount; spreadAmount
+          oraclePrice; executedAt
+        -- Update pool state
+        poolCid <- create this with
+          totalSwapsExecuted = totalSwapsExecuted + 1
+          totalSpreadEarned = totalSpreadEarned + spreadAmount
+          lastUpdatedAt = executedAt
+        pure TreasurySwapResult with poolCid; logCid
+
+    -- | Pause the treasury — blocks all swaps.
+    choice PauseTreasury : ContractId TreasuryPool
+      controller platform
+      do
+        assertMsg "Treasury is already paused" (not isPaused)
+        create this with isPaused = True
+
+    -- | Resume the treasury — allows swaps again.
+    choice ResumeTreasury : ContractId TreasuryPool
+      controller platform
+      do
+        assertMsg "Treasury is not paused" isPaused
+        create this with isPaused = False
+
+    -- | Update balances after backend processes a swap on-chain.
+    -- The backend reconciles actual token balances and syncs them here.
+    choice UpdateBalances : ContractId TreasuryPool
+      with
+        newBalances : [(AssetId, Decimal)]
+        updatedAt   : Time
+      controller platform
+      do
+        assertMsg "Balances must not be empty" (not (null newBalances))
+        assertMsg "All balances must be non-negative" (all (\(_, amt) -> amt >= 0.0) newBalances)
+        create this with balances = newBalances; lastUpdatedAt = updatedAt
+
+    -- | Update the spread rate.
+    choice UpdateSpreadRate : ContractId TreasuryPool
+      with
+        newSpreadRate : Decimal
+        updatedAt     : Time
+      controller platform
+      do
+        assertMsg "Spread rate must be > 0 and < 0.1" (newSpreadRate > 0.0 && newSpreadRate < 0.1)
+        create this with spreadRate = newSpreadRate; lastUpdatedAt = updatedAt
+
+    -- | View treasury stats (nonconsuming).
+    nonconsuming choice ViewTreasuryStats : (Int, Decimal, Bool)
+      controller platform
+      do pure (totalSwapsExecuted, totalSpreadEarned, isPaused)
+
+-- | Immutable log of every treasury swap.
+-- One log per swap, never modified or archived by the platform.
+-- The user is an observer so they can see their own swap history.
+template TreasurySwapLog
+  with
+    platform     : Party
+    user         : Party
+    fromAsset    : AssetId
+    toAsset      : AssetId
+    fromAmount   : Decimal
+    toAmount     : Decimal
+    spreadAmount : Decimal
+    oraclePrice  : Decimal
+    executedAt   : Time
+  where
+    signatory platform
+    observer user

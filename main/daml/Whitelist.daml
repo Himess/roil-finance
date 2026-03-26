@@ -1,0 +1,141 @@
+-- | Whitelist and invite system for Roil Finance — Canton Network aligned.
+-- Platform-managed whitelist with invite codes, daily swap limits,
+-- and max trade size enforcement.
+--
+-- Flow:
+-- 1. Platform creates WhitelistConfig (max 1000 users, $50/day, $25/trade)
+-- 2. Platform adds users via AddToWhitelist (each member gets 3 invite codes)
+-- 3. Members can share invite codes; platform redeems them via RedeemInvite
+-- 4. Members can be deactivated/reactivated by platform
+module Whitelist where
+
+-- | Platform-managed whitelist configuration.
+-- Controls capacity, daily limits, and open/closed state.
+template WhitelistConfig
+  with
+    platform          : Party
+    maxUsers          : Int
+    dailySwapLimitUsd : Decimal    -- $50 default
+    maxTradeSizeUsd   : Decimal    -- $25 default
+    totalUsers        : Int
+    isOpen            : Bool       -- accepting new users?
+  where
+    signatory platform
+    ensure maxUsers > 0
+      && dailySwapLimitUsd > 0.0
+      && maxTradeSizeUsd > 0.0
+      && totalUsers >= 0
+      && totalUsers <= maxUsers
+
+    -- | Add a user to the whitelist.
+    -- Creates a WhitelistMember contract and increments totalUsers.
+    choice AddToWhitelist : (ContractId WhitelistConfig, ContractId WhitelistMember)
+      with
+        user      : Party
+        email     : Optional Text
+        invitedBy : Optional Party
+        joinedAt  : Time
+      controller platform
+      do
+        assertMsg "Whitelist is full" (totalUsers < maxUsers)
+        assertMsg "Whitelist is closed" isOpen
+        memberCid <- create WhitelistMember with
+          platform; user; email; invitedBy
+          joinedAt; isActive = True
+          inviteCodesRemaining = 3
+        configCid <- create this with totalUsers = totalUsers + 1
+        pure (configCid, memberCid)
+
+    -- | Update daily swap limit and max trade size.
+    choice UpdateLimits : ContractId WhitelistConfig
+      with
+        newDailyLimit : Decimal
+        newMaxTrade   : Decimal
+      controller platform
+      do
+        assertMsg "Daily limit must be positive" (newDailyLimit > 0.0)
+        assertMsg "Max trade must be positive" (newMaxTrade > 0.0)
+        create this with
+          dailySwapLimitUsd = newDailyLimit
+          maxTradeSizeUsd = newMaxTrade
+
+    -- | Open or close the whitelist for new registrations.
+    choice ToggleWhitelist : ContractId WhitelistConfig
+      with
+        newIsOpen : Bool
+      controller platform
+      do create this with isOpen = newIsOpen
+
+    -- | View whitelist stats (nonconsuming).
+    nonconsuming choice ViewWhitelistStats : (Int, Int, Bool)
+      controller platform
+      do pure (totalUsers, maxUsers, isOpen)
+
+-- | Individual whitelist member.
+-- Each member gets 3 invite codes and can be activated/deactivated.
+template WhitelistMember
+  with
+    platform             : Party
+    user                 : Party
+    email                : Optional Text
+    invitedBy            : Optional Party
+    joinedAt             : Time
+    isActive             : Bool
+    inviteCodesRemaining : Int
+  where
+    signatory platform
+    observer user
+    ensure inviteCodesRemaining >= 0
+
+    -- | Deactivate member — blocks their swaps.
+    choice DeactivateMember : ContractId WhitelistMember
+      controller platform
+      do
+        assertMsg "Member is already inactive" isActive
+        create this with isActive = False
+
+    -- | Reactivate member — allows swaps again.
+    choice ReactivateMember : ContractId WhitelistMember
+      controller platform
+      do
+        assertMsg "Member is already active" (not isActive)
+        create this with isActive = True
+
+    -- | Use one invite code (decrement remaining).
+    choice UseInviteCode : ContractId WhitelistMember
+      controller platform
+      do
+        assertMsg "No invite codes remaining" (inviteCodesRemaining > 0)
+        assertMsg "Member is not active" isActive
+        create this with inviteCodesRemaining = inviteCodesRemaining - 1
+
+    -- | View member info (nonconsuming). User can check their own status.
+    nonconsuming choice ViewMemberInfo : (Bool, Int, Optional Text)
+      controller user
+      do pure (isActive, inviteCodesRemaining, email)
+
+-- | Invite code record.
+-- Created when a member shares an invite; redeemed when a new user joins.
+template InviteCode
+  with
+    platform  : Party
+    code      : Text
+    createdBy : Party
+    isUsed    : Bool
+    usedBy    : Optional Party
+    createdAt : Time
+  where
+    signatory platform
+    observer createdBy
+    ensure code /= ""
+
+    -- | Redeem an invite code.
+    -- Marks the code as used and records who redeemed it.
+    choice RedeemInvite : ContractId InviteCode
+      with
+        redeemer   : Party
+        redeemedAt : Time
+      controller platform
+      do
+        assertMsg "Code already used" (not isUsed)
+        create this with isUsed = True; usedBy = Some redeemer

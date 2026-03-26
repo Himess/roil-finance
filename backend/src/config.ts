@@ -129,6 +129,22 @@ export const config = {
   // --- Daml package reference ---
   /** Package name as uploaded to the ledger */
   damlPackageName: process.env.DAML_PACKAGE_NAME || 'roil-finance',
+
+  // --- Treasury swap engine ---
+  treasury: {
+    initialBalances: {
+      CC: process.env.TREASURY_CC || '3000',
+      USDCx: process.env.TREASURY_USDCX || '4000',
+      CBTC: process.env.TREASURY_CBTC || '0.08',
+      ETHx: process.env.TREASURY_ETHX || '0.7',
+    },
+    spreadRate: process.env.TREASURY_SPREAD || '0.005',
+    maxTradeUsd: process.env.MAX_TRADE_USD || '25',
+    dailyLimitUsd: process.env.DAILY_LIMIT_USD || '50',
+    maxUsers: Number(process.env.MAX_WHITELIST_USERS || '1000'),
+    maxExposurePct: 0.5,            // 50% max in single token
+    oraclePauseThreshold: 0.05,     // 5% price move = pause
+  },
 } as const;
 
 // ---------------------------------------------------------------------------

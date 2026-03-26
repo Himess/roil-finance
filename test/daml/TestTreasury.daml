@@ -1,0 +1,903 @@
+-- | Tests for Treasury and Whitelist contracts
+module TestTreasury where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import Types
+import Treasury
+import Whitelist
+
+-- ============================================================================
+-- HELPERS
+-- ============================================================================
+
+-- | Helper: create a test AssetId
+mkAsset : Party -> Text -> AssetId
+mkAsset admin symbol = AssetId with symbol; admin
+
+-- | Helper: create a default TreasuryPool for tests
+mkDefaultPool : Party -> Party -> Time -> TreasuryPool
+mkDefaultPool platform tokenAdmin now =
+  let cc = mkAsset tokenAdmin "CC"
+      usdcx = mkAsset tokenAdmin "USDCx"
+  in TreasuryPool with
+    platform
+    balances = [(cc, 100000.0), (usdcx, 50000.0)]
+    spreadRate = 0.005  -- 0.5%
+    totalSwapsExecuted = 0
+    totalSpreadEarned = 0.0
+    isPaused = False
+    lastUpdatedAt = now
+
+-- | Helper: create a default WhitelistConfig for tests
+mkDefaultWhitelist : Party -> WhitelistConfig
+mkDefaultWhitelist platform = WhitelistConfig with
+  platform
+  maxUsers = 1000
+  dailySwapLimitUsd = 50.0
+  maxTradeSizeUsd = 25.0
+  totalUsers = 0
+  isOpen = True
+
+-- ============================================================================
+-- TREASURY TESTS
+-- ============================================================================
+
+-- | Test 1: Create TreasuryPool — verify balances and initial state
+testCreateTreasuryPool : Script ()
+testCreateTreasuryPool = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let now = time (date 2026 Mar 15) 10 0 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd TreasuryPool with
+      platform
+      balances = [(cc, 100000.0), (usdcx, 50000.0)]
+      spreadRate = 0.005
+      totalSwapsExecuted = 0
+      totalSpreadEarned = 0.0
+      isPaused = False
+      lastUpdatedAt = now
+
+  -- Query and verify all fields
+  pools <- query @TreasuryPool platform
+  assertMsg "Should have 1 pool" (length pools == 1)
+  let (_, pool) = head pools
+  assertMsg "Spread rate should be 0.005" (pool.spreadRate == 0.005)
+  assertMsg "Total swaps should be 0" (pool.totalSwapsExecuted == 0)
+  assertMsg "Total spread earned should be 0.0" (pool.totalSpreadEarned == 0.0)
+  assertMsg "Should not be paused" (not pool.isPaused)
+  assertMsg "Should have 2 balance entries" (length pool.balances == 2)
+
+  pure ()
+
+-- | Test 2: Request swap — execute swap, verify log created and stats updated
+testRequestSwap : Script ()
+testRequestSwap = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Execute a swap: Alice swaps 100 CC -> USDCx
+  result <- submit platform do
+    exerciseCmd poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 100.0
+      toAmount = 99.5        -- after 0.5% spread
+      oraclePrice = 1.0
+      spreadAmount = 0.5
+      executedAt = t1
+
+  -- Verify swap log was created
+  logs <- query @TreasurySwapLog alice
+  assertMsg "Should have 1 swap log" (length logs == 1)
+  let (_, log) = head logs
+  assertMsg "Log fromAmount should be 100.0" (log.fromAmount == 100.0)
+  assertMsg "Log toAmount should be 99.5" (log.toAmount == 99.5)
+  assertMsg "Log spreadAmount should be 0.5" (log.spreadAmount == 0.5)
+  assertMsg "Log oraclePrice should be 1.0" (log.oraclePrice == 1.0)
+  assertMsg "Log user should be alice" (log.user == alice)
+
+  -- Verify pool stats updated
+  pools <- query @TreasuryPool platform
+  let (_, pool) = head pools
+  assertMsg "Total swaps should be 1" (pool.totalSwapsExecuted == 1)
+  assertMsg "Total spread earned should be 0.5" (pool.totalSpreadEarned == 0.5)
+
+  pure ()
+
+-- | Test 3: Paused pool rejects swaps
+testPausedSwapFails : Script ()
+testPausedSwapFails = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Pause the pool
+  poolCid <- submit platform do
+    exerciseCmd poolCid PauseTreasury
+
+  -- Attempt swap on paused pool — should fail
+  submitMustFail platform do
+    exerciseCmd poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 100.0
+      toAmount = 99.5
+      oraclePrice = 1.0
+      spreadAmount = 0.5
+      executedAt = t1
+
+  pure ()
+
+-- | Test 4: Pause then resume — verify swap works after resume
+testPauseResume : Script ()
+testPauseResume = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Pause
+  poolCid <- submit platform do
+    exerciseCmd poolCid PauseTreasury
+
+  -- Verify paused
+  pools <- query @TreasuryPool platform
+  let (_, pool) = head pools
+  assertMsg "Should be paused" pool.isPaused
+
+  -- Resume
+  poolCid <- submit platform do
+    exerciseCmd poolCid ResumeTreasury
+
+  -- Verify resumed
+  pools <- query @TreasuryPool platform
+  let (_, pool) = head pools
+  assertMsg "Should not be paused" (not pool.isPaused)
+
+  -- Swap should work after resume
+  result <- submit platform do
+    exerciseCmd poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 50.0
+      toAmount = 49.75
+      oraclePrice = 1.0
+      spreadAmount = 0.25
+      executedAt = t2
+
+  logs <- query @TreasurySwapLog alice
+  assertMsg "Should have 1 swap log after resume" (length logs == 1)
+
+  pure ()
+
+-- | Test 5: Update balances — verify new balances persist
+testUpdateBalances : Script ()
+testUpdateBalances = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+  let cbtc = mkAsset tokenAdmin "CBTC"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Update balances to include CBTC
+  poolCid <- submit platform do
+    exerciseCmd poolCid UpdateBalances with
+      newBalances = [(cc, 90000.0), (usdcx, 55000.0), (cbtc, 2.5)]
+      updatedAt = t1
+
+  pools <- query @TreasuryPool platform
+  let (_, pool) = head pools
+  assertMsg "Should have 3 balance entries" (length pool.balances == 3)
+  assertMsg "Last updated should be t1" (pool.lastUpdatedAt == t1)
+
+  -- Empty balances should fail
+  submitMustFail platform do
+    exerciseCmd poolCid UpdateBalances with
+      newBalances = []
+      updatedAt = t1
+
+  pure ()
+
+-- | Test 6: View stats — verify nonconsuming choice returns correct data
+testViewStats : Script ()
+testViewStats = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- View stats initially
+  (swaps, earned, paused) <- submit platform do
+    exerciseCmd poolCid ViewTreasuryStats
+  assertMsg "Initial swaps should be 0" (swaps == 0)
+  assertMsg "Initial earned should be 0.0" (earned == 0.0)
+  assertMsg "Initial paused should be False" (not paused)
+
+  -- Execute a swap
+  result <- submit platform do
+    exerciseCmd poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 200.0
+      toAmount = 199.0
+      oraclePrice = 1.0
+      spreadAmount = 1.0
+      executedAt = t1
+
+  -- View stats after swap (nonconsuming on the NEW pool)
+  (swaps, earned, paused) <- submit platform do
+    exerciseCmd result.poolCid ViewTreasuryStats
+  assertMsg "Swaps should be 1" (swaps == 1)
+  assertMsg "Earned should be 1.0" (earned == 1.0)
+  assertMsg "Paused should still be False" (not paused)
+
+  pure ()
+
+-- | Test 6b: Invalid spread rates — ensure constraint rejects them
+testInvalidSpreadRate : Script ()
+testInvalidSpreadRate = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let now = time (date 2026 Mar 15) 10 0 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  -- Spread rate of 0 should fail (must be > 0)
+  submitMustFail platform do
+    createCmd TreasuryPool with
+      platform
+      balances = [(cc, 100000.0), (usdcx, 50000.0)]
+      spreadRate = 0.0
+      totalSwapsExecuted = 0
+      totalSpreadEarned = 0.0
+      isPaused = False
+      lastUpdatedAt = now
+
+  -- Spread rate of 0.1 (10%) should fail (must be < 0.1)
+  submitMustFail platform do
+    createCmd TreasuryPool with
+      platform
+      balances = [(cc, 100000.0), (usdcx, 50000.0)]
+      spreadRate = 0.1
+      totalSwapsExecuted = 0
+      totalSpreadEarned = 0.0
+      isPaused = False
+      lastUpdatedAt = now
+
+  -- Negative spread rate should fail
+  submitMustFail platform do
+    createCmd TreasuryPool with
+      platform
+      balances = [(cc, 100000.0), (usdcx, 50000.0)]
+      spreadRate = -0.01
+      totalSwapsExecuted = 0
+      totalSpreadEarned = 0.0
+      isPaused = False
+      lastUpdatedAt = now
+
+  pure ()
+
+-- | Test 6c: Multiple sequential swaps — verify cumulative stats
+testMultipleSwaps : Script ()
+testMultipleSwaps = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+  let t2 = time (date 2026 Mar 15) 10 10 0
+  let t3 = time (date 2026 Mar 15) 10 15 0
+  let cc = mkAsset tokenAdmin "CC"
+  let usdcx = mkAsset tokenAdmin "USDCx"
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Swap 1
+  result1 <- submit platform do
+    exerciseCmd poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 100.0
+      toAmount = 99.5
+      oraclePrice = 1.0
+      spreadAmount = 0.5
+      executedAt = t1
+
+  -- Swap 2
+  result2 <- submit platform do
+    exerciseCmd result1.poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = usdcx
+      toAsset = cc
+      fromAmount = 200.0
+      toAmount = 199.0
+      oraclePrice = 1.0
+      spreadAmount = 1.0
+      executedAt = t2
+
+  -- Swap 3
+  result3 <- submit platform do
+    exerciseCmd result2.poolCid RequestTreasurySwap with
+      user = alice
+      fromAsset = cc
+      toAsset = usdcx
+      fromAmount = 50.0
+      toAmount = 49.75
+      oraclePrice = 1.0
+      spreadAmount = 0.25
+      executedAt = t3
+
+  -- Verify cumulative stats
+  (swaps, earned, _) <- submit platform do
+    exerciseCmd result3.poolCid ViewTreasuryStats
+  assertMsg "Total swaps should be 3" (swaps == 3)
+  assertMsg "Total spread earned should be 1.75" (earned == 1.75)
+
+  -- Verify all 3 logs
+  logs <- query @TreasurySwapLog alice
+  assertMsg "Should have 3 swap logs" (length logs == 3)
+
+  pure ()
+
+-- ============================================================================
+-- WHITELIST TESTS
+-- ============================================================================
+
+-- | Test 7: Create WhitelistConfig — verify initial state
+testCreateWhitelistConfig : Script ()
+testCreateWhitelistConfig = script do
+  platform <- allocateParty "Platform"
+
+  configCid <- submit platform do
+    createCmd WhitelistConfig with
+      platform
+      maxUsers = 1000
+      dailySwapLimitUsd = 50.0
+      maxTradeSizeUsd = 25.0
+      totalUsers = 0
+      isOpen = True
+
+  -- Query and verify
+  configs <- query @WhitelistConfig platform
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, config) = head configs
+  assertMsg "Max users should be 1000" (config.maxUsers == 1000)
+  assertMsg "Daily limit should be 50.0" (config.dailySwapLimitUsd == 50.0)
+  assertMsg "Max trade should be 25.0" (config.maxTradeSizeUsd == 25.0)
+  assertMsg "Total users should be 0" (config.totalUsers == 0)
+  assertMsg "Should be open" config.isOpen
+
+  pure ()
+
+-- | Test 8: Add member to whitelist — verify count incremented and member created
+testAddToWhitelist : Script ()
+testAddToWhitelist = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- Add Alice
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = Some "alice@example.com"
+      invitedBy = None
+      joinedAt = t0
+
+  -- Verify config updated
+  configs <- query @WhitelistConfig platform
+  let (_, config) = head configs
+  assertMsg "Total users should be 1" (config.totalUsers == 1)
+
+  -- Verify member created
+  members <- query @WhitelistMember alice
+  assertMsg "Should have 1 member" (length members == 1)
+  let (_, member) = head members
+  assertMsg "Member should be active" member.isActive
+  assertMsg "Member should have 3 invite codes" (member.inviteCodesRemaining == 3)
+  assertMsg "Email should be set" (member.email == Some "alice@example.com")
+  assertMsg "InvitedBy should be None" (member.invitedBy == None)
+
+  pure ()
+
+-- | Test 9: Whitelist full — adding when at max capacity should fail
+testWhitelistFull : Script ()
+testWhitelistFull = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  -- Create config with max 1 user (simulates full whitelist)
+  configCid <- submit platform do
+    createCmd WhitelistConfig with
+      platform
+      maxUsers = 1
+      dailySwapLimitUsd = 50.0
+      maxTradeSizeUsd = 25.0
+      totalUsers = 0
+      isOpen = True
+
+  -- Add Alice — should succeed (0 < 1)
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Add Bob — should fail (1 == 1, full)
+  submitMustFail platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = bob
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Verify only 1 user
+  configs <- query @WhitelistConfig platform
+  let (_, config) = head configs
+  assertMsg "Total users should be 1" (config.totalUsers == 1)
+
+  pure ()
+
+-- | Test 10: Invite code flow — create, redeem, verify used
+testInviteCodeFlow : Script ()
+testInviteCodeFlow = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+
+  -- Create invite code from Alice
+  codeCid <- submit platform do
+    createCmd InviteCode with
+      platform
+      code = "ALICE-INV-001"
+      createdBy = alice
+      isUsed = False
+      usedBy = None
+      createdAt = t0
+
+  -- Verify invite code exists
+  codes <- query @InviteCode alice
+  assertMsg "Should have 1 invite code" (length codes == 1)
+  let (_, invCode) = head codes
+  assertMsg "Code should not be used" (not invCode.isUsed)
+  assertMsg "UsedBy should be None" (invCode.usedBy == None)
+
+  -- Redeem invite code for Bob
+  codeCid <- submit platform do
+    exerciseCmd codeCid RedeemInvite with
+      redeemer = bob
+      redeemedAt = t1
+
+  -- Verify code is now used
+  codes <- query @InviteCode alice
+  assertMsg "Should still have 1 invite code" (length codes == 1)
+  let (_, invCode) = head codes
+  assertMsg "Code should be used" invCode.isUsed
+  assertMsg "UsedBy should be Bob" (invCode.usedBy == Some bob)
+
+  -- Redeeming again should fail
+  submitMustFail platform do
+    exerciseCmd codeCid RedeemInvite with
+      redeemer = alice
+      redeemedAt = t1
+
+  pure ()
+
+-- | Test 11: Deactivate member — check status, verify reactivation
+testDeactivateMember : Script ()
+testDeactivateMember = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- Add Alice
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Deactivate
+  memberCid <- submit platform do
+    exerciseCmd memberCid DeactivateMember
+
+  -- Verify inactive
+  members <- query @WhitelistMember alice
+  let (_, member) = head members
+  assertMsg "Member should be inactive" (not member.isActive)
+
+  -- Deactivate again should fail (already inactive)
+  submitMustFail platform do
+    exerciseCmd memberCid DeactivateMember
+
+  -- Reactivate
+  memberCid <- submit platform do
+    exerciseCmd memberCid ReactivateMember
+
+  -- Verify active again
+  members <- query @WhitelistMember alice
+  let (_, member) = head members
+  assertMsg "Member should be active again" member.isActive
+
+  -- Reactivate again should fail (already active)
+  submitMustFail platform do
+    exerciseCmd memberCid ReactivateMember
+
+  pure ()
+
+-- | Test 12: Use invite code — decrement remaining codes
+testUseInviteCode : Script ()
+testUseInviteCode = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- Add Alice (gets 3 invite codes)
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Use invite code 1
+  memberCid <- submit platform do
+    exerciseCmd memberCid UseInviteCode
+
+  members <- query @WhitelistMember alice
+  let (_, member) = head members
+  assertMsg "Should have 2 codes remaining" (member.inviteCodesRemaining == 2)
+
+  -- Use invite code 2
+  memberCid <- submit platform do
+    exerciseCmd memberCid UseInviteCode
+
+  members <- query @WhitelistMember alice
+  let (_, member) = head members
+  assertMsg "Should have 1 code remaining" (member.inviteCodesRemaining == 1)
+
+  -- Use invite code 3
+  memberCid <- submit platform do
+    exerciseCmd memberCid UseInviteCode
+
+  members <- query @WhitelistMember alice
+  let (_, member) = head members
+  assertMsg "Should have 0 codes remaining" (member.inviteCodesRemaining == 0)
+
+  -- Use invite code 4 — should fail (no codes remaining)
+  submitMustFail platform do
+    exerciseCmd memberCid UseInviteCode
+
+  pure ()
+
+-- | Test 13: Closed whitelist rejects new members
+testClosedWhitelist : Script ()
+testClosedWhitelist = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- Close whitelist
+  configCid <- submit platform do
+    exerciseCmd configCid ToggleWhitelist with newIsOpen = False
+
+  -- Adding while closed should fail
+  submitMustFail platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Reopen
+  configCid <- submit platform do
+    exerciseCmd configCid ToggleWhitelist with newIsOpen = True
+
+  -- Adding should succeed now
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  configs <- query @WhitelistConfig platform
+  let (_, config) = head configs
+  assertMsg "Total users should be 1 after reopen" (config.totalUsers == 1)
+
+  pure ()
+
+-- | Test 14: Update whitelist limits
+testUpdateLimits : Script ()
+testUpdateLimits = script do
+  platform <- allocateParty "Platform"
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- Update limits
+  configCid <- submit platform do
+    exerciseCmd configCid UpdateLimits with
+      newDailyLimit = 100.0
+      newMaxTrade = 50.0
+
+  configs <- query @WhitelistConfig platform
+  let (_, config) = head configs
+  assertMsg "Daily limit should be 100.0" (config.dailySwapLimitUsd == 100.0)
+  assertMsg "Max trade should be 50.0" (config.maxTradeSizeUsd == 50.0)
+
+  -- Zero daily limit should fail
+  submitMustFail platform do
+    exerciseCmd configCid UpdateLimits with
+      newDailyLimit = 0.0
+      newMaxTrade = 50.0
+
+  -- Negative max trade should fail
+  submitMustFail platform do
+    exerciseCmd configCid UpdateLimits with
+      newDailyLimit = 100.0
+      newMaxTrade = -10.0
+
+  pure ()
+
+-- | Test 15: ViewMemberInfo — user can view their own info
+testViewMemberInfo : Script ()
+testViewMemberInfo = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = Some "alice@roil.app"
+      invitedBy = None
+      joinedAt = t0
+
+  -- Alice views her own info
+  (isActive, codes, email) <- submit alice do
+    exerciseCmd memberCid ViewMemberInfo
+
+  assertMsg "Should be active" isActive
+  assertMsg "Should have 3 codes" (codes == 3)
+  assertMsg "Email should match" (email == Some "alice@roil.app")
+
+  pure ()
+
+-- | Test 16: Empty invite code — ensure constraint rejects it
+testEmptyInviteCode : Script ()
+testEmptyInviteCode = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  -- Empty code should fail
+  submitMustFail platform do
+    createCmd InviteCode with
+      platform
+      code = ""
+      createdBy = alice
+      isUsed = False
+      usedBy = None
+      createdAt = t0
+
+  pure ()
+
+-- | Test 17: Update spread rate — verify new rate persists
+testUpdateSpreadRate : Script ()
+testUpdateSpreadRate = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 10 5 0
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Update spread rate to 1%
+  poolCid <- submit platform do
+    exerciseCmd poolCid UpdateSpreadRate with
+      newSpreadRate = 0.01
+      updatedAt = t1
+
+  pools <- query @TreasuryPool platform
+  let (_, pool) = head pools
+  assertMsg "Spread rate should be 0.01" (pool.spreadRate == 0.01)
+
+  -- Invalid spread (0.0) should fail
+  submitMustFail platform do
+    exerciseCmd poolCid UpdateSpreadRate with
+      newSpreadRate = 0.0
+      updatedAt = t1
+
+  -- Invalid spread (0.1 = 10%) should fail
+  submitMustFail platform do
+    exerciseCmd poolCid UpdateSpreadRate with
+      newSpreadRate = 0.1
+      updatedAt = t1
+
+  pure ()
+
+-- | Test 18: Inactive member cannot use invite codes
+testInactiveMemberInviteCode : Script ()
+testInactiveMemberInviteCode = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  (configCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- Deactivate
+  memberCid <- submit platform do
+    exerciseCmd memberCid DeactivateMember
+
+  -- Try to use invite code while inactive — should fail
+  submitMustFail platform do
+    exerciseCmd memberCid UseInviteCode
+
+  pure ()
+
+-- | Test 19: ViewWhitelistStats — verify nonconsuming choice
+testViewWhitelistStats : Script ()
+testViewWhitelistStats = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultWhitelist platform)
+
+  -- View stats initially
+  (total, maxU, isOpen) <- submit platform do
+    exerciseCmd configCid ViewWhitelistStats
+  assertMsg "Initial total should be 0" (total == 0)
+  assertMsg "Max should be 1000" (maxU == 1000)
+  assertMsg "Should be open" isOpen
+
+  -- Add Alice
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = None
+      invitedBy = None
+      joinedAt = t0
+
+  -- View stats after adding Alice
+  (total, maxU, isOpen) <- submit platform do
+    exerciseCmd configCid ViewWhitelistStats
+  assertMsg "Total should be 1" (total == 1)
+
+  -- Add Bob
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = bob
+      email = None
+      invitedBy = Some alice
+      joinedAt = t0
+
+  -- View stats after adding Bob
+  (total, _, _) <- submit platform do
+    exerciseCmd configCid ViewWhitelistStats
+  assertMsg "Total should be 2" (total == 2)
+
+  pure ()
+
+-- | Test 20: Pause already-paused treasury should fail, resume non-paused should fail
+testPauseResumeEdgeCases : Script ()
+testPauseResumeEdgeCases = script do
+  platform <- allocateParty "Platform"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  poolCid <- submit platform do
+    createCmd (mkDefaultPool platform tokenAdmin t0)
+
+  -- Resume non-paused should fail
+  submitMustFail platform do
+    exerciseCmd poolCid ResumeTreasury
+
+  -- Pause
+  poolCid <- submit platform do
+    exerciseCmd poolCid PauseTreasury
+
+  -- Pause again should fail
+  submitMustFail platform do
+    exerciseCmd poolCid PauseTreasury
+
+  pure ()
