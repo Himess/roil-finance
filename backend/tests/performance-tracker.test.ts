@@ -15,15 +15,15 @@ import { recordSnapshot, getPerformance, getPerformanceSummary } from '../src/se
 describe('Performance Tracker', () => {
   const party = 'test-party::1220abc';
 
-  it('records and retrieves snapshots', () => {
+  it('records and retrieves snapshots', async () => {
     recordSnapshot(party, 10000, [{ asset: 'CC', amount: 5000, valueCc: 5000 }]);
-    const history = getPerformance(party);
+    const history = await getPerformance(party);
     expect(history.length).toBeGreaterThan(0);
     expect(history[history.length - 1].totalValueCc).toBe(10000);
   });
 
-  it('returns empty for unknown party', () => {
-    const history = getPerformance('unknown-party');
+  it('returns empty for unknown party', async () => {
+    const history = await getPerformance('unknown-party');
     expect(history).toEqual([]);
   });
 
@@ -36,8 +36,8 @@ describe('Performance Tracker', () => {
     expect(typeof summary.low30d).toBe('number');
   });
 
-  it('filters by time window', () => {
-    const history = getPerformance(party, '24h');
+  it('filters by time window', async () => {
+    const history = await getPerformance(party, '24h');
     // All snapshots from this test run are within 24h
     expect(history.length).toBeGreaterThan(0);
   });
