@@ -539,7 +539,7 @@ export class CantexRealClient {
 
     return {
       txId: buildId,
-      status: submitResult.status || 'submitted',
+      status: (submitResult.status as 'submitted' | 'confirmed' | 'failed') || 'submitted',
       inputAmount: sellAmount,
       outputAmount: quote.returnedAmount,
     };

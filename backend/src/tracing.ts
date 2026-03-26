@@ -44,7 +44,7 @@ async function init(): Promise<void> {
       { NodeSDK },
       { OTLPTraceExporter },
       { getNodeAutoInstrumentations },
-      { Resource },
+      resourceMod,
       { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION },
       api,
     ] = await Promise.all([
@@ -58,7 +58,7 @@ async function init(): Promise<void> {
 
     apiModule = api;
 
-    const resource = new Resource({
+    const resource = resourceMod.resourceFromAttributes({
       [ATTR_SERVICE_NAME]: 'roil-backend',
       [ATTR_SERVICE_VERSION]: '1.0.0',
     });
