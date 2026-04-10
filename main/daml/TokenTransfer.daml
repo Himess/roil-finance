@@ -1,27 +1,14 @@
--- | CIP-0056 Token Standard integration for Roil Finance — Canton Network aligned.
+-- | CIP-0056 Token Standard integration for Roil Finance — Splice integrated.
 -- Wraps token transfer and swap operations so the rebalancer can move
 -- real tokens (CC, USDCx, CBTC) on the Canton Network.
 --
--- CIP-0056 Compatibility:
--- This module follows the Canton Improvement Proposal 0056 (Token Standard)
--- interface pattern. When Splice DARs are available, these templates would
--- implement the standard interfaces:
---
---   interface instance Transferable.I for TransferRequest where
---     view = Transferable.View with ...
---     transfer = ...
---
---   interface instance Holding.I for TransferRequest where
---     view = Holding.View with
---       instrument = InstrumentKey with ...
---       account = AccountKey with ...
---       amount = amount
---
--- For now, the templates carry all necessary fields and the backend
--- bridges to the actual Splice token holding/transfer contracts.
+-- Splice Token Standard types (InstrumentId, Holding) are used for
+-- compatibility. The backend bridges to actual Splice token contracts
+-- via the Ledger API and Token Standard REST endpoints.
 module TokenTransfer where
 
 import Types
+import Splice.Api.Token.HoldingV1 qualified as SpliceHolding
 import DA.TextMap (TextMap, empty)
 
 -- | Status of a transfer or swap
@@ -82,21 +69,23 @@ template TransferRequest
 -- | Atomic swap request (DvP) for rebalancing.
 -- Two legs: sell one asset, buy another.
 -- Includes CIP-0056 settlement fields for deadline enforcement.
+-- sellHoldingCid links to the real Splice Holding contract on-chain.
 template SwapRequest
   with
-    platform     : Party
-    user         : Party
-    sellAsset    : Text
-    sellAdmin    : Party
-    sellAmount   : Decimal
-    buyAsset     : Text
-    buyAdmin     : Party
-    buyAmount    : Decimal      -- expected amount (from quote)
-    minBuyAmount : Decimal      -- minimum acceptable buy amount (slippage protection)
-    status       : TransferStatus
-    createdAt    : Time
-    settlement   : Optional SettlementInfo  -- CIP-0056 settlement timing
-    metadata     : TextMap Text             -- extensible metadata
+    platform       : Party
+    user           : Party
+    sellAsset      : Text
+    sellAdmin      : Party
+    sellAmount     : Decimal
+    buyAsset       : Text
+    buyAdmin       : Party
+    buyAmount      : Decimal      -- expected amount (from quote)
+    minBuyAmount   : Decimal      -- minimum acceptable buy amount (slippage protection)
+    status         : TransferStatus
+    createdAt      : Time
+    settlement     : Optional SettlementInfo  -- CIP-0056 settlement timing
+    metadata       : TextMap Text             -- extensible metadata
+    sellHoldingCid : Optional (ContractId SpliceHolding.Holding) -- Splice on-chain holding
   where
     signatory platform, user
     ensure sellAmount > 0.0 && buyAmount > 0.0 && minBuyAmount >= 0.0 && minBuyAmount <= buyAmount

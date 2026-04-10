@@ -375,7 +375,7 @@ testFeaturedApp = script do
   configCid <- submit platform do
     exerciseCmd configCid FeaturedApp.UpdateRegistration with
       newIsRegistered = True
-      newFeaturedAppRightCid = Some "00abc123deadbeef"
+      newFeaturedAppRightCid = None
 
   -- Record reward distribution activity after registration
   (configCid, activityCid4) <- submit platform do
@@ -1089,7 +1089,7 @@ testActivityMarkerCreation = script do
       platform
       appName = "Roil"
       isRegistered = True
-      featuredAppRightCid = Some "fake-right-cid"
+      featuredAppRightCid = None
       totalActivities = 0
       lastActivityAt = None
 

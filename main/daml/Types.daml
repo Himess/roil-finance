@@ -1,9 +1,11 @@
--- | Core types for Roil Finance — Canton Network aligned.
+-- | Core types for Roil Finance — Canton Network / Splice integrated.
 -- All timestamps use DA.Time.Time (not Text) for proper ledger-time integration.
 module Types where
 
+import Splice.Api.Token.HoldingV1 qualified as SpliceHolding
+
 -- | Supported asset identifiers on Canton Network.
--- Mirrors the Splice instrument model (issuer + symbol).
+-- Compatible with Splice's InstrumentId (admin + id).
 data AssetId = AssetId
   with
     symbol : Text       -- e.g., "CC", "USDCx", "CBTC"
@@ -14,6 +16,18 @@ data AssetId = AssetId
 -- Format: "<symbol>@<admin>"
 assetIdKey : AssetId -> Text
 assetIdKey aid = aid.symbol <> "@" <> partyToText aid.admin
+
+-- | Convert Roil AssetId to Splice InstrumentId
+toInstrumentId : AssetId -> SpliceHolding.InstrumentId
+toInstrumentId aid = SpliceHolding.InstrumentId with
+  admin = aid.admin
+  id = aid.symbol
+
+-- | Convert Splice InstrumentId to Roil AssetId
+fromInstrumentId : SpliceHolding.InstrumentId -> AssetId
+fromInstrumentId iid = AssetId with
+  symbol = iid.id
+  admin = iid.admin
 
 -- | A single allocation target within a portfolio
 data TargetAllocation = TargetAllocation

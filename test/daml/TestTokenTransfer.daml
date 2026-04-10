@@ -21,7 +21,7 @@ testTransferFlow = script do
 
   -- 1. Create a transfer request: Alice sends 500 USDCx to Bob
   --    signatory platform, sender (alice) — need both authorizations
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform
       sender = alice
@@ -68,7 +68,7 @@ testSwapFlow = script do
 
   -- 1. Create a swap request: Alice sells 1000 CC, expects ~150 USDCx
   --    signatory platform, user (alice) — need both authorizations
-  swapCid <- submitMulti [platform, alice] [] do
+  swapCid <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform
       user = alice
@@ -83,6 +83,7 @@ testSwapFlow = script do
       createdAt = time (date 2026 Mar 15) 11 0 0
       settlement = None
       metadata = empty
+      sellHoldingCid = None
 
   -- 2. Platform executes the swap (after Cantex confirmation)
   logCid <- submit platform do
@@ -114,7 +115,7 @@ testRejectTransfer = script do
   tokenAdmin <- allocateParty "TokenAdmin"
 
   -- 1. Create a transfer request
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform
       sender = alice
@@ -155,7 +156,7 @@ testWithdrawTransfer = script do
   tokenAdmin <- allocateParty "TokenAdmin"
 
   -- 1. Create a transfer request
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform
       sender = alice
@@ -189,7 +190,7 @@ testCancelSwap = script do
   cbtcAdmin <- allocateParty "CBTCAdmin"
 
   -- 1. Create a swap request
-  swapCid <- submitMulti [platform, alice] [] do
+  swapCid <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform
       user = alice
@@ -204,6 +205,7 @@ testCancelSwap = script do
       createdAt = time (date 2026 Mar 15) 14 0 0
       settlement = None
       metadata = empty
+      sellHoldingCid = None
 
   -- 2. Alice cancels the swap
   submit alice do
@@ -229,7 +231,7 @@ testMultipleOperations = script do
   tokenAdmin <- allocateParty "TokenAdmin"
 
   -- 1. Create and approve transfer 1: 100 CC
-  t1 <- submitMulti [platform, alice] [] do
+  t1 <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "CC"; instrumentAdmin = tokenAdmin
@@ -241,7 +243,7 @@ testMultipleOperations = script do
       approvedAt = time (date 2026 Mar 15) 10 1 0
 
   -- 2. Create and approve transfer 2: 200 USDCx
-  t2 <- submitMulti [platform, alice] [] do
+  t2 <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
@@ -253,14 +255,14 @@ testMultipleOperations = script do
       approvedAt = time (date 2026 Mar 15) 11 1 0
 
   -- 3. Execute a swap: 500 CC -> USDCx
-  s1 <- submitMulti [platform, alice] [] do
+  s1 <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform; user = alice
       sellAsset = "CC"; sellAdmin = tokenAdmin; sellAmount = 500.0
       buyAsset = "USDCx"; buyAdmin = tokenAdmin; buyAmount = 75.0
       minBuyAmount = 70.0
       status = TransferPending; createdAt = time (date 2026 Mar 15) 12 0 0
-      settlement = None; metadata = empty
+      settlement = None; metadata = empty; sellHoldingCid = None
   submit platform do
     exerciseCmd s1 ExecuteSwap with
       actualBuyAmount = 74.5
@@ -290,7 +292,7 @@ testAuthorization = script do
   tokenAdmin <- allocateParty "TokenAdmin"
 
   -- Create a transfer request from Alice to Bob
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform; sender = alice; receiver = bob
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
@@ -328,14 +330,14 @@ testCBTCSwap = script do
   cbtcAdmin <- allocateParty "CBTCAdmin"
 
   -- Swap USDCx for CBTC (buy 0.001 BTC with ~40 USDCx)
-  swapCid <- submitMulti [platform, alice] [] do
+  swapCid <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform; user = alice
       sellAsset = "USDCx"; sellAdmin = usdcxAdmin; sellAmount = 40.0
       buyAsset = "CBTC"; buyAdmin = cbtcAdmin; buyAmount = 0.001
       minBuyAmount = 0.0009
       status = TransferPending; createdAt = time (date 2026 Mar 15) 16 0 0
-      settlement = None; metadata = empty
+      settlement = None; metadata = empty; sellHoldingCid = None
 
   logCid <- submit platform do
     exerciseCmd swapCid ExecuteSwap with
@@ -361,7 +363,7 @@ testSlippageRejection = script do
   usdcxAdmin <- allocateParty "USDCxAdmin"
 
   -- Create a swap request with a high minBuyAmount
-  swapCid <- submitMulti [platform, alice] [] do
+  swapCid <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform
       user = alice
@@ -376,6 +378,7 @@ testSlippageRejection = script do
       createdAt = time (date 2026 Mar 15) 17 0 0
       settlement = None
       metadata = empty
+      sellHoldingCid = None
 
   -- Should fail: actualBuyAmount (130.0) < minBuyAmount (145.0)
   submitMustFail platform do
@@ -409,7 +412,7 @@ testSettlementDeadlineValidation = script do
         settleBefore = deadline
 
   -- Create transfer with settlement deadline
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform
       sender = alice
@@ -452,7 +455,7 @@ testTransferWithMetadata = script do
   let meta = DA.TextMap.fromList [("purpose", "invoice-42"), ("category", "services")]
 
   -- Create transfer with metadata
-  transferCid <- submitMulti [platform, alice] [] do
+  transferCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferRequest with
       platform
       sender = alice
@@ -494,7 +497,7 @@ testSwapWithMetadata = script do
   let meta = DA.TextMap.fromList [("rebalance-id", "reb-123"), ("leg", "1-of-3")]
 
   -- Create swap with metadata
-  swapCid <- submitMulti [platform, alice] [] do
+  swapCid <- submit (actAs platform <> actAs alice) do
     createCmd SwapRequest with
       platform
       user = alice
@@ -509,6 +512,7 @@ testSwapWithMetadata = script do
       createdAt = time (date 2026 Mar 15) 14 0 0
       settlement = None
       metadata = meta
+      sellHoldingCid = None
 
   -- Execute the swap
   logCid <- submit platform do

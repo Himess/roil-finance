@@ -1,15 +1,16 @@
--- | Canton Featured App Rewards integration — Canton Network aligned.
+-- | Canton Featured App Rewards integration — Splice DAR integrated.
 -- Records platform activity for the Canton Network App Rewards program.
 --
--- On the real Canton Network with Splice DARs available, this module would:
--- 1. Hold a FeaturedAppRight contract (obtained from GSF registration)
--- 2. Exercise FeaturedAppRight_CreateActivityMarker on each activity
--- 3. Automatically generate AppRewardCoupons via Super Validator automation
+-- With Splice DARs:
+-- 1. Holds a FeaturedAppRight contract (obtained from GSF registration)
+-- 2. Exercises FeaturedAppRight_CreateActivityMarker on each activity
+-- 3. Automatically generates AppRewardCoupons via Super Validator automation
 --
--- Without Splice DARs, activity is recorded locally via ActivityMarker
--- contracts that mirror the on-network data model. The backend can query
--- these to report activity metrics and prepare for network integration.
+-- Without FeaturedAppRight (tests or pre-registration):
+-- Activity is recorded locally via ActivityMarker contracts.
 module FeaturedApp where
+
+import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateActivityMarker(..), AppRewardBeneficiary(..))
 
 -- | Activity types for reward tracking
 data ActivityType
@@ -19,9 +20,8 @@ data ActivityType
   | RewardDistribution
   deriving (Eq, Show)
 
--- | Activity record for featured app rewards.
--- This is the local equivalent of Splice's ActivityMarker.
--- On the real network, each ActivityMarker triggers an AppRewardCoupon.
+-- | Activity record for audit trail.
+-- Created for every activity regardless of FeaturedAppRight status.
 template ActivityRecord
   with
     platform     : Party
@@ -34,9 +34,9 @@ template ActivityRecord
     signatory platform
     observer user
 
--- | Activity marker — created by RecordActivity to mirror Splice's
--- AppRewardCoupon creation pattern. Each marker represents one
--- reward-eligible activity on the platform.
+-- | Local activity marker — fallback when FeaturedAppRight is not held.
+-- When FeaturedAppRight IS available, Splice creates real
+-- FeaturedAppActivityMarker contracts instead.
 template ActivityMarker
   with
     platform     : Party
@@ -51,31 +51,22 @@ template ActivityMarker
 
 -- | Platform-level featured app configuration.
 -- Manages the connection to Canton Network's App Rewards system.
---
--- FeaturedAppRight reference:
--- When registered with GSF and Splice DARs are available, the
--- featuredAppRightCid field holds the actual ContractId of the
--- FeaturedAppRight contract. Without DARs, it stores the CID as Text
--- for reference and the module creates local ActivityMarker contracts.
+-- When registered with GSF, holds a FeaturedAppRight contract for
+-- creating real activity markers that earn CC rewards.
 template FeaturedAppConfig
   with
     platform            : Party
     appName             : Text
-    isRegistered        : Bool          -- true when registered with GSF
-    featuredAppRightCid : Optional Text -- CID of FeaturedAppRight on real network
+    isRegistered        : Bool                              -- true when registered with GSF
+    featuredAppRightCid : Optional (ContractId FeaturedAppRight) -- real Splice contract
     totalActivities     : Int
     lastActivityAt      : Optional Time
   where
     signatory platform
 
-    -- Record an activity and create an ActivityMarker.
-    -- On the real Canton Network with Splice DARs, this would exercise:
-    --   exerciseCmd (fromTextContractId featuredAppRightCid)
-    --     FeaturedAppRight_CreateActivityMarker with
-    --       provider = platform
-    --       activityMarkerDescription = description
-    -- Without DARs, we create a local ActivityMarker that mirrors the
-    -- on-network data model and can be queried for metrics.
+    -- Record an activity. When FeaturedAppRight is held, exercises
+    -- the Splice interface to create real AppRewardCoupons.
+    -- Falls back to local ActivityMarker when not registered.
     choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
         user         : Party
@@ -85,25 +76,27 @@ template FeaturedAppConfig
         now          : Time
       controller platform
       do
-        -- Update config with activity count
+        assertMsg "Activity ID must not be empty" (activityId /= "")
         configCid <- create this with
           totalActivities = totalActivities + 1
           lastActivityAt = Some now
 
-        -- Create local activity record for audit trail
+        -- Audit trail (always created)
         _ <- create ActivityRecord with
           platform; user; activityType; activityId; description
           recordedAt = now
 
-        -- Create ActivityMarker (local equivalent of AppRewardCoupon trigger).
-        -- On the real network, this would be replaced by:
-        --   case featuredAppRightCid of
-        --     Some cid -> do
-        --       exerciseCmd (fromTextContractId cid)
-        --         FeaturedAppRight_CreateActivityMarker with
-        --           provider = platform
-        --           activityMarkerDescription = description
-        --     None -> pure ()  -- not registered, skip reward generation
+        -- Exercise Splice FeaturedAppRight if registered
+        case featuredAppRightCid of
+          Some cid -> do
+            _ <- exercise cid FeaturedAppRight_CreateActivityMarker with
+              beneficiaries = [AppRewardBeneficiary with
+                beneficiary = platform
+                weight = 1.0]
+            pure ()
+          None -> pure ()
+
+        -- Local marker (always created for backend queries)
         markerCid <- create ActivityMarker with
           platform
           provider = platform
@@ -177,7 +170,7 @@ template FeaturedAppConfig
     choice UpdateRegistration : ContractId FeaturedAppConfig
       with
         newIsRegistered        : Bool
-        newFeaturedAppRightCid : Optional Text
+        newFeaturedAppRightCid : Optional (ContractId FeaturedAppRight)
       controller platform
       do
         create this with

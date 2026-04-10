@@ -2,6 +2,8 @@ node_modules/
 dist/
 .daml/
 *.dar
+# But include Splice DARs needed for build
+!main/dars/*.dar
 .env
 .env.local
 *.log

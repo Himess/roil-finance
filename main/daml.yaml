@@ -1,20 +1,13 @@
 sdk-version: 3.4.11
 name: roil-finance
 source: daml
-version: 0.2.0
+version: 0.3.0
 dependencies:
   - daml-prim
   - daml-stdlib
 
-# Canton Network / Splice data-dependencies
-# When Splice DARs are available (e.g., from Canton Network devnet or mainnet),
-# uncomment the following to enable native token holding, allocation, and
-# featured app reward integrations:
-#
-# data-dependencies:
-#   - splice-api-token-holding-v1.dar
-#   - splice-api-token-allocation-v1.dar
-#   - splice-api-token-allocation-request-v1.dar
-#   - splice-api-featured-app-v1.dar
-#   - splice-wallet-payments-v1.dar
-#   - splice-amulet-v1.dar
+# Canton Network / Splice data-dependencies (DevNet live since 2026-04-10)
+data-dependencies:
+  - dars/splice-api-featured-app-v1-1.0.0.dar
+  - dars/splice-api-token-holding-v1-1.0.0.dar
+  - dars/splice-api-token-metadata-v1-1.0.0.dar

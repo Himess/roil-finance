@@ -1,0 +1,418 @@
+-- | Tests for FeaturedApp contracts
+module TestFeaturedApp where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import qualified FeaturedApp
+
+-- ============================================================================
+-- HELPERS
+-- ============================================================================
+
+-- | Helper: create a default FeaturedAppConfig for tests
+mkDefaultConfig : Party -> FeaturedApp.FeaturedAppConfig
+mkDefaultConfig platform = FeaturedApp.FeaturedAppConfig with
+  platform
+  appName = "Roil"
+  isRegistered = False
+  featuredAppRightCid = None
+  totalActivities = 0
+  lastActivityAt = None
+
+-- ============================================================================
+-- RECORD ACTIVITY TESTS
+-- ============================================================================
+
+-- | Test 1: RecordActivity with valid data — verify config updated and marker created
+testRecordActivityValid : Script ()
+testRecordActivityValid = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let now = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Record a valid activity
+  (configCid, markerCid) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "rebalance-001"
+      description = "Portfolio rebalance: 3 swap legs"
+      now
+
+  -- Verify config updated
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should be 1" (cfg.totalActivities == 1)
+  assertMsg "lastActivityAt should be set" (cfg.lastActivityAt == Some now)
+
+  -- Verify ActivityRecord created
+  records <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Should have 1 activity record" (length records == 1)
+  let (_, rec) = head records
+  assertMsg "Activity type should be Rebalance" (rec.activityType == FeaturedApp.Rebalance)
+  assertMsg "Activity ID should match" (rec.activityId == "rebalance-001")
+  assertMsg "Description should match" (rec.description == "Portfolio rebalance: 3 swap legs")
+
+  -- Verify ActivityMarker created
+  markers <- query @FeaturedApp.ActivityMarker platform
+  assertMsg "Should have 1 marker" (length markers == 1)
+  let (_, marker) = head markers
+  assertMsg "Marker type should be Rebalance" (marker.activityType == FeaturedApp.Rebalance)
+  assertMsg "Marker provider should be platform" (marker.provider == platform)
+  assertMsg "Marker beneficiary should be platform" (marker.beneficiary == platform)
+
+  pure ()
+
+-- | Test 2: RecordActivity with empty activityId — should fail
+testRecordActivityEmptyId : Script ()
+testRecordActivityEmptyId = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let now = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Empty activityId should fail
+  submitMustFail platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = ""
+      description = "Should fail"
+      now
+
+  -- Verify config unchanged (still 0 activities)
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should still be 0" (cfg.totalActivities == 0)
+
+  pure ()
+
+-- | Test 3: ActivityMarker creation — verify fields for multiple activity types
+testActivityMarkerCreation : Script ()
+testActivityMarkerCreation = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 12 0 0
+  let t1 = time (date 2026 Mar 15) 13 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Record Rebalance activity
+  (configCid, marker1) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "rebal-001"
+      description = "Rebalance activity"
+      now = t0
+
+  -- Record DCAExecution activity
+  (configCid, marker2) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.DCAExecution
+      activityId = "dca-001"
+      description = "DCA execution"
+      now = t1
+
+  -- Record CompoundExecution activity
+  (configCid, marker3) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.CompoundExecution
+      activityId = "compound-001"
+      description = "Compound execution"
+      now = t2
+
+  -- Verify all 3 markers created
+  markers <- query @FeaturedApp.ActivityMarker platform
+  assertMsg "Should have 3 ActivityMarkers" (length markers == 3)
+
+  -- Verify all 3 activity records created
+  records <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Should have 3 activity records" (length records == 3)
+
+  -- Verify activity types
+  let markerTypes = map (\(_, m) -> m.activityType) markers
+  assertMsg "Should have Rebalance marker" (any (\t -> t == FeaturedApp.Rebalance) markerTypes)
+  assertMsg "Should have DCAExecution marker" (any (\t -> t == FeaturedApp.DCAExecution) markerTypes)
+  assertMsg "Should have CompoundExecution marker" (any (\t -> t == FeaturedApp.CompoundExecution) markerTypes)
+
+  pure ()
+
+-- | Test 4: FeaturedAppConfig lifecycle — create, record activities, update registration
+testFeaturedAppConfigLifecycle : Script ()
+testFeaturedAppConfigLifecycle = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 11 0 0
+  let t2 = time (date 2026 Mar 15) 12 0 0
+  let t3 = time (date 2026 Mar 15) 13 0 0
+
+  -- Create config (unregistered)
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Verify initial state
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, cfg) = head configs
+  assertMsg "Should not be registered" (not cfg.isRegistered)
+  assertMsg "appName should be Roil" (cfg.appName == "Roil")
+  assertMsg "totalActivities should be 0" (cfg.totalActivities == 0)
+  assertMsg "lastActivityAt should be None" (cfg.lastActivityAt == None)
+  assertMsg "featuredAppRightCid should be None" (cfg.featuredAppRightCid == None)
+
+  -- Record activities for different users
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "act-001"
+      description = "Alice rebalance"
+      now = t0
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = bob
+      activityType = FeaturedApp.DCAExecution
+      activityId = "act-002"
+      description = "Bob DCA"
+      now = t1
+
+  -- Verify activities count
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should be 2" (cfg.totalActivities == 2)
+  assertMsg "lastActivityAt should be t1" (cfg.lastActivityAt == Some t1)
+
+  -- Update registration (simulate GSF registration — no real FeaturedAppRight in tests)
+  configCid <- submit platform do
+    exerciseCmd configCid FeaturedApp.UpdateRegistration with
+      newIsRegistered = True
+      newFeaturedAppRightCid = None
+
+  -- Verify registration updated
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "Should be registered" cfg.isRegistered
+
+  -- Record activity after registration — should still work
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.RewardDistribution
+      activityId = "act-003"
+      description = "Reward distribution"
+      now = t2
+
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should be 3" (cfg.totalActivities == 3)
+
+  -- Unregister (edge case)
+  configCid <- submit platform do
+    exerciseCmd configCid FeaturedApp.UpdateRegistration with
+      newIsRegistered = False
+      newFeaturedAppRightCid = None
+
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "Should be unregistered" (not cfg.isRegistered)
+  assertMsg "featuredAppRightCid should be None" (cfg.featuredAppRightCid == None)
+  -- totalActivities should be preserved
+  assertMsg "totalActivities should still be 3" (cfg.totalActivities == 3)
+
+  pure ()
+
+-- | Test 5: Platform party integration — only platform can record activities
+testPlatformPartyIntegration : Script ()
+testPlatformPartyIntegration = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let now = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Non-platform party (alice) should NOT be able to record activity
+  submitMustFail alice do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "unauthorized-001"
+      description = "Unauthorized activity"
+      now
+
+  -- Platform should be able to record
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "authorized-001"
+      description = "Authorized activity"
+      now
+
+  records <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Should have 1 activity (only the authorized one)" (length records == 1)
+
+  pure ()
+
+-- | Test 6: Multiple users — verify activity isolation per user
+testMultipleUsersActivities : Script ()
+testMultipleUsersActivities = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  charlie <- allocateParty "Charlie"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 11 0 0
+  let t2 = time (date 2026 Mar 15) 12 0 0
+  let t3 = time (date 2026 Mar 15) 13 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Record activities for different users
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "alice-001"
+      description = "Alice rebalance"
+      now = t0
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.DCAExecution
+      activityId = "alice-002"
+      description = "Alice DCA"
+      now = t1
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = bob
+      activityType = FeaturedApp.CompoundExecution
+      activityId = "bob-001"
+      description = "Bob compound"
+      now = t2
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = charlie
+      activityType = FeaturedApp.RewardDistribution
+      activityId = "charlie-001"
+      description = "Charlie reward"
+      now = t3
+
+  -- Alice should see her 2 activities
+  aliceRecords <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Alice should have 2 activities" (length aliceRecords == 2)
+
+  -- Bob should see his 1 activity
+  bobRecords <- query @FeaturedApp.ActivityRecord bob
+  assertMsg "Bob should have 1 activity" (length bobRecords == 1)
+
+  -- Charlie should see his 1 activity
+  charlieRecords <- query @FeaturedApp.ActivityRecord charlie
+  assertMsg "Charlie should have 1 activity" (length charlieRecords == 1)
+
+  -- Platform should see all 4 activities
+  platformRecords <- query @FeaturedApp.ActivityRecord platform
+  assertMsg "Platform should see 4 activities" (length platformRecords == 4)
+
+  -- Config total should be 4
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should be 4" (cfg.totalActivities == 4)
+
+  pure ()
+
+-- | Test 7: RewardDistribution activity type — verify it works correctly
+testRewardDistributionActivity : Script ()
+testRewardDistributionActivity = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let now = time (date 2026 Apr 1) 0 5 0
+
+  configCid <- submit platform do
+    createCmd FeaturedApp.FeaturedAppConfig with
+      platform
+      appName = "Roil"
+      isRegistered = True
+      featuredAppRightCid = None  -- no real FeaturedAppRight in tests
+      totalActivities = 0
+      lastActivityAt = None
+
+  -- Record a RewardDistribution activity
+  (configCid, markerCid) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.RewardDistribution
+      activityId = "reward-001"
+      description = "Monthly rewards: 15.5 CC distributed"
+      now
+
+  -- Verify record
+  records <- query @FeaturedApp.ActivityRecord alice
+  assertMsg "Should have 1 record" (length records == 1)
+  let (_, rec) = head records
+  assertMsg "Type should be RewardDistribution" (rec.activityType == FeaturedApp.RewardDistribution)
+  assertMsg "Description should match" (rec.description == "Monthly rewards: 15.5 CC distributed")
+
+  -- Verify marker
+  markers <- query @FeaturedApp.ActivityMarker platform
+  assertMsg "Should have 1 marker" (length markers == 1)
+  let (_, marker) = head markers
+  assertMsg "Marker type should be RewardDistribution" (marker.activityType == FeaturedApp.RewardDistribution)
+  assertMsg "Marker createdAt should match" (marker.createdAt == now)
+
+  pure ()
+
+-- | Test 8: UpdateRegistration — non-platform party should fail
+testUpdateRegistrationAuth : Script ()
+testUpdateRegistrationAuth = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- Alice should NOT be able to update registration
+  submitMustFail alice do
+    exerciseCmd configCid FeaturedApp.UpdateRegistration with
+      newIsRegistered = True
+      newFeaturedAppRightCid = None
+
+  -- Platform should be able to update
+  configCid <- submit platform do
+    exerciseCmd configCid FeaturedApp.UpdateRegistration with
+      newIsRegistered = True
+      newFeaturedAppRightCid = None
+
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "Should be registered" cfg.isRegistered
+
+  pure ()
