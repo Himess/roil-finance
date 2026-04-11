@@ -12,6 +12,10 @@ module FeaturedApp where
 
 import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateActivityMarker(..), AppRewardBeneficiary(..))
 
+-- | Helper: create default beneficiaries list (100% to one party)
+mkDefaultBeneficiaries : Party -> [AppRewardBeneficiary]
+mkDefaultBeneficiaries p = [AppRewardBeneficiary with beneficiary = p, weight = 1.0]
+
 -- | Activity types for reward tracking
 data ActivityType
   = Rebalance
@@ -53,32 +57,40 @@ template ActivityMarker
 -- Manages the connection to Canton Network's App Rewards system.
 -- When registered with GSF, holds a FeaturedAppRight contract for
 -- creating real activity markers that earn CC rewards.
+--
+-- beneficiaries: configurable reward split between parties (e.g., app + validator).
+-- Weights must sum to 1.0. Default: [(platform, 1.0)].
 template FeaturedAppConfig
   with
     platform            : Party
     appName             : Text
     isRegistered        : Bool                              -- true when registered with GSF
     featuredAppRightCid : Optional (ContractId FeaturedAppRight) -- real Splice contract
+    beneficiaries       : [AppRewardBeneficiary]            -- configurable reward split
     totalActivities     : Int
     lastActivityAt      : Optional Time
   where
     signatory platform
+    ensure not (null beneficiaries)
+      && all (\b -> b.weight > 0.0) beneficiaries
 
-    -- Record an activity. When FeaturedAppRight is held, exercises
-    -- the Splice interface to create real AppRewardCoupons.
-    -- Falls back to local ActivityMarker when not registered.
+    -- Record an activity with optional weight multiplier.
+    -- activityWeight >= 1: creates that many markers (multi-leg = higher reward).
+    -- When FeaturedAppRight is held, exercises Splice interface per marker.
     choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
-        user         : Party
-        activityType : ActivityType
-        activityId   : Text
-        description  : Text
-        now          : Time
+        user           : Party
+        activityType   : ActivityType
+        activityId     : Text
+        description    : Text
+        activityWeight : Int  -- >= 1, multi-leg rebalance = swapLegCount
+        now            : Time
       controller platform
       do
         assertMsg "Activity ID must not be empty" (activityId /= "")
+        assertMsg "Activity weight must be >= 1" (activityWeight >= 1)
         configCid <- create this with
-          totalActivities = totalActivities + 1
+          totalActivities = totalActivities + activityWeight
           lastActivityAt = Some now
 
         -- Audit trail (always created)
@@ -86,13 +98,14 @@ template FeaturedAppConfig
           platform; user; activityType; activityId; description
           recordedAt = now
 
-        -- Exercise Splice FeaturedAppRight if registered
+        -- Exercise Splice FeaturedAppRight if registered (once per weight unit)
         case featuredAppRightCid of
           Some cid -> do
-            _ <- exercise cid FeaturedAppRight_CreateActivityMarker with
-              beneficiaries = [AppRewardBeneficiary with
-                beneficiary = platform
-                weight = 1.0]
+            let exerciseOnce _ = do
+                  _ <- exercise cid FeaturedAppRight_CreateActivityMarker with
+                    beneficiaries = beneficiaries
+                  pure ()
+            mapA exerciseOnce [1 .. activityWeight]
             pure ()
           None -> pure ()
 
@@ -108,7 +121,7 @@ template FeaturedAppConfig
         pure (configCid, markerCid)
 
     -- Record a rebalance activity (convenience wrapper).
-    -- Called by the backend after Portfolio.CompleteRebalance succeeds.
+    -- activityWeight = swapLegCount (3 legs = 3x reward).
     choice RecordRebalanceActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
         user        : Party
@@ -123,10 +136,11 @@ template FeaturedAppConfig
           activityType = Rebalance
           activityId
           description = desc
+          activityWeight = swapLegCount
           now
 
     -- Record a DCA execution activity (convenience wrapper).
-    -- Called by the backend after DCAExecution.CompleteDCAExecution succeeds.
+    -- activityWeight = 1 (single buy operation).
     choice RecordDCAActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
         user            : Party
@@ -146,9 +160,11 @@ template FeaturedAppConfig
           activityType = DCAExecution
           activityId
           description = desc
+          activityWeight = 1
           now
 
     -- Record a compound execution activity (convenience wrapper).
+    -- activityWeight = 1 (single compound operation).
     choice RecordCompoundActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
         user             : Party
@@ -164,6 +180,7 @@ template FeaturedAppConfig
           activityType = CompoundExecution
           activityId
           description = desc
+          activityWeight = 1
           now
 
     -- Update registration status (after registering with GSF)
@@ -176,3 +193,13 @@ template FeaturedAppConfig
         create this with
           isRegistered = newIsRegistered
           featuredAppRightCid = newFeaturedAppRightCid
+
+    -- Update beneficiary weight split (e.g., app 80% + validator 20%)
+    choice UpdateBeneficiaries : ContractId FeaturedAppConfig
+      with
+        newBeneficiaries : [AppRewardBeneficiary]
+      controller platform
+      do
+        assertMsg "Beneficiaries must not be empty" (not (null newBeneficiaries))
+        assertMsg "All weights must be positive" (all (\b -> b.weight > 0.0) newBeneficiaries)
+        create this with beneficiaries = newBeneficiaries

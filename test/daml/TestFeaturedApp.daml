@@ -18,6 +18,7 @@ mkDefaultConfig platform = FeaturedApp.FeaturedAppConfig with
   appName = "Roil"
   isRegistered = False
   featuredAppRightCid = None
+  beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
   totalActivities = 0
   lastActivityAt = None
 
@@ -43,6 +44,7 @@ testRecordActivityValid = script do
       activityType = FeaturedApp.Rebalance
       activityId = "rebalance-001"
       description = "Portfolio rebalance: 3 swap legs"
+      activityWeight = 1
       now
 
   -- Verify config updated
@@ -88,6 +90,7 @@ testRecordActivityEmptyId = script do
       activityType = FeaturedApp.Rebalance
       activityId = ""
       description = "Should fail"
+      activityWeight = 1
       now
 
   -- Verify config unchanged (still 0 activities)
@@ -118,6 +121,7 @@ testActivityMarkerCreation = script do
       activityType = FeaturedApp.Rebalance
       activityId = "rebal-001"
       description = "Rebalance activity"
+      activityWeight = 1
       now = t0
 
   -- Record DCAExecution activity
@@ -127,6 +131,7 @@ testActivityMarkerCreation = script do
       activityType = FeaturedApp.DCAExecution
       activityId = "dca-001"
       description = "DCA execution"
+      activityWeight = 1
       now = t1
 
   -- Record CompoundExecution activity
@@ -136,6 +141,7 @@ testActivityMarkerCreation = script do
       activityType = FeaturedApp.CompoundExecution
       activityId = "compound-001"
       description = "Compound execution"
+      activityWeight = 1
       now = t2
 
   -- Verify all 3 markers created
@@ -187,6 +193,7 @@ testFeaturedAppConfigLifecycle = script do
       activityType = FeaturedApp.Rebalance
       activityId = "act-001"
       description = "Alice rebalance"
+      activityWeight = 1
       now = t0
 
   (configCid, _) <- submit platform do
@@ -195,6 +202,7 @@ testFeaturedAppConfigLifecycle = script do
       activityType = FeaturedApp.DCAExecution
       activityId = "act-002"
       description = "Bob DCA"
+      activityWeight = 1
       now = t1
 
   -- Verify activities count
@@ -221,6 +229,7 @@ testFeaturedAppConfigLifecycle = script do
       activityType = FeaturedApp.RewardDistribution
       activityId = "act-003"
       description = "Reward distribution"
+      activityWeight = 1
       now = t2
 
   configs <- query @FeaturedApp.FeaturedAppConfig platform
@@ -260,6 +269,7 @@ testPlatformPartyIntegration = script do
       activityType = FeaturedApp.Rebalance
       activityId = "unauthorized-001"
       description = "Unauthorized activity"
+      activityWeight = 1
       now
 
   -- Platform should be able to record
@@ -269,6 +279,7 @@ testPlatformPartyIntegration = script do
       activityType = FeaturedApp.Rebalance
       activityId = "authorized-001"
       description = "Authorized activity"
+      activityWeight = 1
       now
 
   records <- query @FeaturedApp.ActivityRecord alice
@@ -299,6 +310,7 @@ testMultipleUsersActivities = script do
       activityType = FeaturedApp.Rebalance
       activityId = "alice-001"
       description = "Alice rebalance"
+      activityWeight = 1
       now = t0
 
   (configCid, _) <- submit platform do
@@ -307,6 +319,7 @@ testMultipleUsersActivities = script do
       activityType = FeaturedApp.DCAExecution
       activityId = "alice-002"
       description = "Alice DCA"
+      activityWeight = 1
       now = t1
 
   (configCid, _) <- submit platform do
@@ -315,6 +328,7 @@ testMultipleUsersActivities = script do
       activityType = FeaturedApp.CompoundExecution
       activityId = "bob-001"
       description = "Bob compound"
+      activityWeight = 1
       now = t2
 
   (configCid, _) <- submit platform do
@@ -323,6 +337,7 @@ testMultipleUsersActivities = script do
       activityType = FeaturedApp.RewardDistribution
       activityId = "charlie-001"
       description = "Charlie reward"
+      activityWeight = 1
       now = t3
 
   -- Alice should see her 2 activities
@@ -362,6 +377,7 @@ testRewardDistributionActivity = script do
       appName = "Roil"
       isRegistered = True
       featuredAppRightCid = None  -- no real FeaturedAppRight in tests
+      beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
       totalActivities = 0
       lastActivityAt = None
 
@@ -372,6 +388,7 @@ testRewardDistributionActivity = script do
       activityType = FeaturedApp.RewardDistribution
       activityId = "reward-001"
       description = "Monthly rewards: 15.5 CC distributed"
+      activityWeight = 1
       now
 
   -- Verify record

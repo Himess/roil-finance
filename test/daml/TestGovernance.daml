@@ -442,6 +442,7 @@ mkPreapproval : Party -> Party -> Time -> Time -> TransferPreapproval
 mkPreapproval sender receiver created expires = TransferPreapproval with
   sender
   receiver
+  provider = sender  -- app provider defaults to sender in tests
   instrumentId = "USDCx"
   maxAmountPerTransfer = 1000.0
   expiresAt = expires
@@ -459,10 +460,11 @@ testCreatePreapproval = script do
   let t0 = time (date 2026 Mar 15) 10 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd TransferPreapproval with
       sender = platform
       receiver = alice
+      provider = platform
       instrumentId = "USDCx"
       maxAmountPerTransfer = 500.0
       expiresAt = expiry
@@ -493,7 +495,7 @@ testExecutePreapproved = script do
   let t1 = time (date 2026 Mar 15) 12 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Execute transfer
@@ -531,7 +533,7 @@ testExceedLimit = script do
   let t1 = time (date 2026 Mar 15) 12 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Try to transfer 1500 when max is 1000 — should fail
@@ -574,7 +576,7 @@ testExpiredPreapproval = script do
   let expiry = time (date 2026 Mar 20) 10 0 0
   let afterExpiry = time (date 2026 Mar 25) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Try to execute after expiry — should fail
@@ -603,7 +605,7 @@ testRevokePreapproval = script do
   let t1 = time (date 2026 Mar 15) 12 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Receiver (alice) revokes
@@ -633,7 +635,7 @@ testSenderRevoke = script do
   let t1 = time (date 2026 Mar 15) 12 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Sender (platform) revokes
@@ -664,7 +666,7 @@ testUpdateLimit = script do
   let t2 = time (date 2026 Mar 15) 14 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Receiver (alice) updates limit from 1000 to 2000
@@ -710,7 +712,7 @@ testDeactivateReactivate = script do
   let t2 = time (date 2026 Mar 15) 14 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Deactivate
@@ -766,7 +768,7 @@ testCanTransfer = script do
   let expiry = time (date 2026 Mar 20) 10 0 0
   let afterExpiry = time (date 2026 Mar 25) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Valid transfer check — should return True
@@ -828,7 +830,7 @@ testMultipleTransfers = script do
   let t3 = time (date 2026 Mar 15) 16 0 0
   let expiry = time (date 2026 Jun 15) 10 0 0
 
-  preapprovalCid <- submitMulti [platform, alice] [] do
+  preapprovalCid <- submit (actAs platform <> actAs alice) do
     createCmd (mkPreapproval platform alice t0 expiry)
 
   -- Transfer 1: 200.0

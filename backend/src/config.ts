@@ -25,16 +25,16 @@ const NETWORK_DEFAULTS: Record<NetworkEnv, {
     scanUrl: 'http://scan.localhost:4000',
   },
   devnet: {
-    jsonApiUrl: 'https://json-api.sv-1.devnet.sync.global',       // DevNet JSON API
-    grpcApiUrl: 'https://grpc-api.sv-1.devnet.sync.global',
+    jsonApiUrl: 'http://159.195.71.102:5003',                     // Roil DevNet validator
+    grpcApiUrl: 'http://159.195.71.102:5002',
     cantexApiUrl: 'https://api.devnet.cantex.io',
-    scanUrl: 'https://scan.sv-1.devnet.sync.global',
+    scanUrl: 'https://scan.sv-1.dev.global.canton.network.sync.global',
   },
   testnet: {
-    jsonApiUrl: 'https://json-api.sv-1.testnet.sync.global',      // TestNet JSON API
-    grpcApiUrl: 'https://grpc-api.sv-1.testnet.sync.global',
+    jsonApiUrl: 'http://159.195.78.106:5003',                     // Roil TestNet validator
+    grpcApiUrl: 'http://159.195.78.106:5002',
     cantexApiUrl: 'https://api.testnet.cantex.io',
-    scanUrl: 'https://scan.sv-1.testnet.sync.global',
+    scanUrl: 'https://scan.sv-1.test.global.canton.network.sync.global',
   },
   mainnet: {
     jsonApiUrl: 'https://json-api.sv-1.sync.global',              // MainNet JSON API
@@ -118,6 +118,22 @@ export const config = {
   /** FeaturedAppRight contract ID from GSF registration */
   featuredAppRightCid: process.env.FEATURED_APP_RIGHT_CID || '',
 
+  /** Validator party identity (for beneficiary weight split) */
+  validatorParty: process.env.VALIDATOR_PARTY || '',
+
+  /** App reward split: percentage to app party (rest to validator) */
+  appRewardSplitPct: parseFloat(process.env.APP_REWARD_SPLIT_PCT || '0.8'),
+
+  // --- Traffic Fee Subsidization ---
+  /** Enable paying traffic fees on behalf of users */
+  subsidizeTrafficFees: process.env.SUBSIDIZE_TRAFFIC === 'true',
+
+  /** Target traffic throughput in bytes/sec for auto-top-up */
+  trafficTargetThroughput: Number(process.env.TRAFFIC_TARGET_THROUGHPUT || '1000'),
+
+  /** Minimum top-up interval in seconds */
+  trafficMinTopupInterval: Number(process.env.TRAFFIC_MIN_TOPUP_INTERVAL || '600'),
+
   // --- Temple DEX ---
   templeApiUrl: process.env.TEMPLE_API_URL || 'https://app.templedigitalgroup.com/api',
   templeApiKey: process.env.TEMPLE_API_KEY || '',
@@ -155,7 +171,7 @@ if (config.network !== 'localnet' && config.jwtMode === 'unsafe') {
   throw new Error('JWT_MODE=unsafe is not allowed in non-localnet environments');
 }
 if (config.network !== 'localnet' && config.jwtSecret === 'roil-finance-dev-secret') {
-  throw new Error('Default JWT_SECRET must be changed in non-localnet environments');
+  throw new Error('FATAL: Cannot use default JWT secret in non-localnet environments. Set JWT_SECRET env variable.');
 }
 
 // ---------------------------------------------------------------------------

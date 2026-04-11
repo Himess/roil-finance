@@ -1,14 +1,15 @@
--- | Transfer pre-approval pattern for Roil Finance — Canton Network aligned.
+-- | Transfer pre-approval pattern for Roil Finance — Splice integrated.
 -- Enables auto-accept transfers between parties up to a configurable limit.
 --
--- This pattern is common in Canton Network applications where a receiver
--- wants to pre-authorize transfers from a specific sender (e.g., the
--- platform rebalancer) without requiring manual approval each time.
+-- The provider field identifies the app provider (Roil) who earns
+-- FeaturedApp rewards on each preapproved transfer. When a transfer
+-- executes, the backend calls FeaturedAppConfig.RecordActivity to
+-- generate AppRewardCoupons.
 --
 -- Usage:
 -- 1. Sender and receiver both sign a TransferPreapproval contract.
 -- 2. The sender can execute transfers up to maxAmountPerTransfer.
--- 3. Each transfer is logged immutably.
+-- 3. Each transfer is logged immutably + generates FA reward.
 -- 4. The receiver can revoke or update limits at any time.
 module TransferPreapproval where
 
@@ -26,6 +27,7 @@ template TransferPreapproval
   with
     sender               : Party
     receiver             : Party
+    provider             : Party      -- app provider (Roil) — earns FA rewards
     instrumentId         : Text       -- token instrument being pre-approved
     maxAmountPerTransfer : Decimal    -- maximum amount per single transfer
     expiresAt            : Time       -- pre-approval expiration time
@@ -35,6 +37,7 @@ template TransferPreapproval
     createdAt            : Time
   where
     signatory sender, receiver
+    observer provider
     ensure maxAmountPerTransfer > 0.0
 
     -- Note: Contract keys removed (not supported in Daml-LF 3.x)
@@ -108,7 +111,7 @@ template TransferPreapproval
     choice DeactivatePreapproval : ContractId TransferPreapproval
       controller receiver
       do
-        assertMsg "Already inactive" isActive
+        assertMsg "Preapproval must be active to deactivate" isActive
         create this with isActive = False
 
     -- Receiver reactivates a previously deactivated pre-approval.
