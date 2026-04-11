@@ -111,7 +111,14 @@ export class FeaturedAppEngine {
             `registered=${payload.isRegistered}, totalActivities=${payload.totalActivities}`,
         );
       } else {
-        // Create a new FeaturedAppConfig
+        // Create a new FeaturedAppConfig with default beneficiaries
+        const beneficiaries = config.validatorParty
+          ? [
+              { beneficiary: platform, weight: String(config.appRewardSplitPct) },
+              { beneficiary: config.validatorParty, weight: String(1 - config.appRewardSplitPct) },
+            ]
+          : [{ beneficiary: platform, weight: '1.0' }];
+
         const result = await ledger.create(
           TEMPLATES.FeaturedAppConfig,
           {
@@ -119,6 +126,7 @@ export class FeaturedAppEngine {
             appName: 'Roil',
             isRegistered: false,
             featuredAppRightCid: null,
+            beneficiaries,
             totalActivities: 0,
           },
           [platform],
@@ -151,6 +159,7 @@ export class FeaturedAppEngine {
     user: string,
     activityType: ActivityType,
     description: string,
+    activityWeight: number = 1,
   ): Promise<void> {
     const platform = config.platformParty;
 
@@ -176,7 +185,8 @@ export class FeaturedAppEngine {
           activityId: `${activityType}-${user}-${Date.now()}`,
           activityType,
           description,
-          timestamp: new Date().toISOString(),
+          activityWeight: String(activityWeight),
+          now: new Date().toISOString(),
         },
         [platform],
       );
@@ -287,7 +297,8 @@ export class FeaturedAppEngine {
             activityId: `${marker.activityType}-${marker.user}-${Date.now()}`,
             activityType: marker.activityType,
             description: `[retry] ${marker.description}`,
-            timestamp: new Date().toISOString(),
+            activityWeight: '1',
+            now: new Date().toISOString(),
           },
           [platform],
         );
@@ -418,6 +429,7 @@ export class FeaturedAppEngine {
       user,
       'Rebalance',
       `Rebalance: drift ${driftBefore.toFixed(2)}% -> ${driftAfter.toFixed(2)}%, ${swapCount} swaps`,
+      swapCount, // multi-leg = N× reward
     );
   }
 
