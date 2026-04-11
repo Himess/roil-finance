@@ -53,7 +53,7 @@ export class TransactionStream extends EventEmitter {
     while (this.isRunning) {
       try {
         this.abortController = new AbortController();
-        const res = await fetch(`${this.baseUrl}/v2/updates/flat`, {
+        const res = await fetch(`${this.baseUrl}/v2/updates`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
