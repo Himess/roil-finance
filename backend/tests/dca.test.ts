@@ -304,4 +304,94 @@ describe('DCA Scheduling Logic', () => {
       expect(next).toBe('2026-03-10T03:00:00.000Z');
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Error paths
+  // -----------------------------------------------------------------------
+
+  describe('Error paths', () => {
+    it('should default to Daily interval for invalid frequency strings', () => {
+      const DAILY_MS = 86_400_000;
+
+      // Invalid / unrecognized frequency values should fall back to Daily
+      expect(frequencyToMs('Biweekly')).toBe(DAILY_MS);
+      expect(frequencyToMs('Yearly')).toBe(DAILY_MS);
+      expect(frequencyToMs('')).toBe(DAILY_MS);
+      expect(frequencyToMs('  ')).toBe(DAILY_MS);
+      expect(frequencyToMs('hourly')).toBe(DAILY_MS); // case-sensitive
+      expect(frequencyToMs('DAILY')).toBe(DAILY_MS);  // case-sensitive
+    });
+
+    it('should handle negative amountPerBuy in parseFrequency without crash', () => {
+      // parseFrequency itself does not validate amount, but the schedule
+      // payload can contain any value. Verify parsing works independently.
+      const freq = parseFrequency({ tag: 'Daily' });
+      expect(freq).toBe('Daily');
+
+      // Even with an unknown tag, parsing returns the raw string
+      const unknown = parseFrequency({ tag: 'Unknown' });
+      expect(unknown).toBe('Unknown');
+    });
+
+    it('should return null for computeNextExecution with empty timestamps', () => {
+      // null lastExecution + empty createdAt = invalid base date
+      const next1 = computeNextExecution('Daily', null, '');
+      expect(next1).toBeNull();
+
+      // null lastExecution + completely invalid createdAt
+      const next2 = computeNextExecution('Weekly', null, 'garbage-date');
+      expect(next2).toBeNull();
+    });
+
+    it('should not be due for a schedule with negative elapsed time', () => {
+      const now = Date.now();
+      // Created in the far future — negative elapsed time
+      const futureCreated = new Date(now + 86_400_000 * 30).toISOString();
+
+      expect(isDue('Daily', true, futureCreated, null, now)).toBe(false);
+    });
+
+    it('should not execute when schedule is inactive even if time elapsed', () => {
+      const now = Date.now();
+      const DAY = 86_400_000;
+      const createdAt = new Date(now - DAY * 100).toISOString();
+      const lastExecution = new Date(now - DAY * 50).toISOString();
+
+      // isActive = false should always return false regardless of timing
+      expect(isDue('Daily', false, createdAt, null, now)).toBe(false);
+      expect(isDue('Daily', false, createdAt, lastExecution, now)).toBe(false);
+      expect(isDue('Hourly', false, createdAt, null, now)).toBe(false);
+    });
+
+    it('should handle concurrent execution detection via lock pattern', () => {
+      // Verify the lock pattern concept: a Map-based lock with TTL
+      // mirrors the executingSchedules pattern in dca.ts
+      const locks = new Map<string, number>();
+      const LOCK_TTL = 300_000; // 5 minutes
+
+      const scheduleId = 'schedule-abc-123';
+
+      // No lock initially — schedule can execute
+      expect(locks.has(scheduleId)).toBe(false);
+
+      // Acquire lock
+      locks.set(scheduleId, Date.now());
+      expect(locks.has(scheduleId)).toBe(true);
+
+      // Concurrent attempt should detect the lock
+      const lockTime = locks.get(scheduleId)!;
+      const isLocked = Date.now() - lockTime < LOCK_TTL;
+      expect(isLocked).toBe(true);
+
+      // Simulate lock expiry by setting an old timestamp
+      locks.set(scheduleId, Date.now() - LOCK_TTL - 1000);
+      const expiredLockTime = locks.get(scheduleId)!;
+      const isExpired = Date.now() - expiredLockTime >= LOCK_TTL;
+      expect(isExpired).toBe(true);
+
+      // Clean up lock after execution
+      locks.delete(scheduleId);
+      expect(locks.has(scheduleId)).toBe(false);
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { RebalanceEngine, isSlippageAcceptable } from '../src/engine/rebalance.js';
 import type { Holding, TargetAllocation, SwapLeg } from '../src/engine/rebalance.js';
 
@@ -279,6 +279,115 @@ describe('RebalanceEngine', () => {
 
       // Expected 100, got 97.99 → just barely over 2% tolerance
       expect(isSlippageAcceptable(100, 97.99, 0.02)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Error path: insufficient balance for swap
+  // -----------------------------------------------------------------------
+
+  describe('error paths', () => {
+    it('should return empty legs when holdings have zero total value', async () => {
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+      // All holdings have zero value → totalValue = 0
+      const holdings = [
+        makeHolding('CC', 1000, 0),
+        makeHolding('USDCx', 500, 0),
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      // Zero portfolio value should produce no swap legs
+      expect(legs).toEqual([]);
+    });
+
+    it('should return empty legs when a single asset holds 100% and targets 100%', async () => {
+      // Single asset portfolio where target is also 100% — already balanced
+      const targets = [
+        makeTarget('CC', 100),
+      ];
+      const holdings = [
+        makeHolding('CC', 10000, 5000),
+      ];
+
+      const legs = await engine.planSwapLegs(holdings, targets);
+
+      // No rebalancing needed — single asset at its target
+      expect(legs).toEqual([]);
+    });
+
+    it('should calculate max drift of 100% for single asset against split targets', () => {
+      // Portfolio holds only CC but targets expect a split
+      const targets = [
+        makeTarget('CC', 0),
+        makeTarget('USDCx', 100),
+      ];
+      const holdings = [
+        makeHolding('CC', 10000, 5000),
+      ];
+
+      const result = engine.calculateDrift(holdings, targets);
+
+      // CC is 100% vs 0% → drift 100%
+      expect(result.drifts.get('CC')).toBe(100);
+      // USDCx is 0% vs 100% → drift 100%
+      expect(result.drifts.get('USDCx')).toBe(100);
+      expect(result.maxDrift).toBe(100);
+    });
+
+    it('should handle holdings with negative valueCc gracefully', () => {
+      // Edge case: negative values should not cause NaN or crash
+      const targets = [
+        makeTarget('CC', 50),
+        makeTarget('USDCx', 50),
+      ];
+      const holdings = [
+        makeHolding('CC', 100, -500),
+        makeHolding('USDCx', 100, 500),
+      ];
+
+      // Should not throw — totalValue = 0, so drift defaults
+      const result = engine.calculateDrift(holdings, targets);
+
+      expect(typeof result.maxDrift).toBe('number');
+      expect(result.drifts.size).toBe(2);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Circuit breaker open state integration
+  // -----------------------------------------------------------------------
+
+  describe('circuit breaker open state', () => {
+    it('should reject execution immediately when circuit breaker is open', async () => {
+      // Import the circuit breaker directly to test its behavior
+      // with the rebalance engine pattern
+      const { CircuitBreaker } = await import('../src/utils/circuit-breaker.js');
+      const breaker = new CircuitBreaker({
+        name: 'test-rebalance',
+        failureThreshold: 2,
+        resetTimeoutMs: 60_000,
+        successThreshold: 2,
+      });
+
+      // Open the circuit breaker by causing failures
+      for (let i = 0; i < 2; i++) {
+        await expect(
+          breaker.execute(() => Promise.reject(new Error('service down'))),
+        ).rejects.toThrow('service down');
+      }
+
+      expect(breaker.getState()).toBe('open');
+
+      // Now any call through the breaker should be rejected immediately
+      const mockSwap = vi.fn().mockResolvedValue({ outputAmount: 100 });
+      await expect(breaker.execute(mockSwap)).rejects.toThrow(
+        'Circuit breaker [test-rebalance] is OPEN',
+      );
+      expect(mockSwap).not.toHaveBeenCalled();
     });
   });
 });

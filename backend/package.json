@@ -11,6 +11,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@noble/hashes": "^2.2.0",
     "@opentelemetry/auto-instrumentations-node": "^0.71.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",
     "@opentelemetry/sdk-node": "^0.213.0",

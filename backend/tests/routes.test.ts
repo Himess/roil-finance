@@ -19,6 +19,7 @@ vi.mock('../src/config.js', () => ({
     ledgerUserId: 'app-provider',
     defaultDriftThreshold: 5.0,
     minTxValue: 10.0,
+    platformFeeRate: 0.001,
     damlPackageName: 'roil-finance',
     port: 3001,
   },
@@ -189,6 +190,7 @@ vi.mock('../src/middleware/security.js', () => {
     sanitizeInput: (_req: any, _res: any, next: any) => next(),
     securityHeaders: (_req: any, _res: any, next: any) => next(),
     requestSizeLimiter: () => (_req: any, _res: any, next: any) => next(),
+    auditLogger: (_req: any, _res: any, next: any) => next(),
     _resetRateLimiterState: () => requestCounts.clear(),
   };
 });
@@ -547,6 +549,118 @@ describe('Route-level tests', () => {
       });
       expect(res.status).toBe(201);
       expect(res.body).toHaveProperty('success', true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Admin routes
+  //
+  // NOTE: The admin router has its own internal rate limiter (10 req/min).
+  // We create a fresh app for these tests to avoid hitting that limit
+  // from prior requests. Each test uses minimal requests to stay within
+  // the budget.
+  // -----------------------------------------------------------------------
+
+  describe('Admin routes', () => {
+    let adminApp: Express;
+
+    beforeAll(() => {
+      adminApp = createApp();
+    });
+
+    it('should return admin status on GET /api/admin/status (localnet bypasses auth)', async () => {
+      // In localnet mode, requireAdmin middleware is skipped
+      // so this should succeed without platform party credentials
+      const res = await request(adminApp, 'GET', '/api/admin/status');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toHaveProperty('success', true);
+      expect((res.body as any).data).toHaveProperty('paused');
+      expect((res.body as any).data).toHaveProperty('frozen');
+      expect((res.body as any).data).toHaveProperty('feeRate');
+      expect((res.body as any).data).toHaveProperty('allowedAssets');
+      expect((res.body as any).data).toHaveProperty('startedAt');
+    });
+
+    it('should pause and resume operations', async () => {
+      // Pause
+      const pauseRes = await request(adminApp, 'POST', '/api/admin/pause', {
+        reason: 'test pause',
+      });
+
+      expect(pauseRes.status).toBe(200);
+      expect(pauseRes.body).toHaveProperty('success', true);
+      expect((pauseRes.body as any).data).toHaveProperty('paused', true);
+      expect((pauseRes.body as any).data).toHaveProperty('reason', 'test pause');
+
+      // Resume
+      const resumeRes = await request(adminApp, 'POST', '/api/admin/resume');
+
+      expect(resumeRes.status).toBe(200);
+      expect(resumeRes.body).toHaveProperty('success', true);
+      expect((resumeRes.body as any).data).toHaveProperty('paused', false);
+    });
+
+    it('should return 400 when pausing an already paused platform and record audit log', async () => {
+      // Pause first
+      await request(adminApp, 'POST', '/api/admin/pause', { reason: 'first' });
+
+      // Pause again — should fail
+      const res = await request(adminApp, 'POST', '/api/admin/pause', { reason: 'second' });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toHaveProperty('success', false);
+
+      // Resume to cleanup
+      await request(adminApp, 'POST', '/api/admin/resume');
+
+      // Check audit log — should contain entries from above actions
+      const auditRes = await request(adminApp, 'GET', '/api/admin/audit-log');
+
+      expect(auditRes.status).toBe(200);
+      expect(auditRes.body).toHaveProperty('success', true);
+      const entries = (auditRes.body as any).data;
+      expect(Array.isArray(entries)).toBe(true);
+      expect(entries.length).toBeGreaterThan(0);
+
+      // Most recent entry should have required audit fields
+      const latestEntry = entries[0];
+      expect(latestEntry).toHaveProperty('action');
+      expect(latestEntry).toHaveProperty('actor');
+      expect(latestEntry).toHaveProperty('timestamp');
+      expect(latestEntry).toHaveProperty('details');
+    });
+
+    it('should activate emergency freeze', async () => {
+      // Emergency freeze (request 8)
+      const freezeRes = await request(adminApp, 'POST', '/api/admin/emergency-freeze', {
+        reason: 'security incident',
+      });
+
+      expect(freezeRes.status).toBe(200);
+      expect(freezeRes.body).toHaveProperty('success', true);
+      expect((freezeRes.body as any).data).toHaveProperty('frozen', true);
+      expect((freezeRes.body as any).data).toHaveProperty('paused', true);
+
+      // Resume from freeze (request 9)
+      const resumeRes = await request(adminApp, 'POST', '/api/admin/resume');
+      expect(resumeRes.status).toBe(200);
+    });
+  });
+
+  // Use a second fresh app to test fee rate validation
+  // NOTE: The admin rate limiter is module-scoped (shared across all app
+  // instances). The test above already used 9 of the 10 allowed requests.
+  // This test uses exactly 1 request to validate fee rate rejection.
+  describe('Admin fee rate validation', () => {
+    it('should reject invalid fee rate (> 10%) on PUT /api/admin/fee-rate', async () => {
+      // Fee rate > 10% should be rejected by Zod schema validation
+      const res = await request(app, 'PUT', '/api/admin/fee-rate', {
+        feeRate: 0.5,
+      });
+
+      expect(res.status).toBe(400);
+      expect(res.body).toHaveProperty('success', false);
     });
   });
 });

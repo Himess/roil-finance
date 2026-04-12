@@ -15,8 +15,8 @@ import { metricsRouter } from './routes/metrics.js';
 import { adminRouter } from './routes/admin.js';
 import { swapRouter } from './routes/swap.js';
 import { whitelistRouter } from './routes/whitelist.js';
-import { cctpRouter } from './routes/cctp.js';
-import { cctpClient } from './services/cctp-client.js';
+import { xreserveRouter } from './routes/xreserve.js';
+import { xreserveClient } from './services/xreserve-client.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter, auditLogger } from './middleware/security.js';
 // For multi-instance production deployment with Redis:
 // import { rateLimiter } from './middleware/rate-limiter.js';
@@ -108,7 +108,7 @@ export function createApp(): express.Express {
   app.use('/api/transfers', transfersRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/swap', swapRouter);
-  app.use('/api/cctp', cctpRouter);
+  app.use('/api/xreserve', xreserveRouter);
   app.use('/api/whitelist', whitelistRouter);
   app.use('/metrics', metricsRouter);
 

@@ -293,4 +293,216 @@ describe('Security Middleware', () => {
       expect(next.called).toBe(true);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // Nested prototype pollution
+  // -----------------------------------------------------------------------
+
+  describe('nested prototype pollution', () => {
+    it('should strip deeply nested __proto__ keys', () => {
+      const body: Record<string, unknown> = Object.create(null);
+      body.level1 = Object.create(null);
+      (body.level1 as Record<string, unknown>).__proto__ = { admin: true };
+      (body.level1 as Record<string, unknown>).nested = Object.create(null);
+      ((body.level1 as Record<string, unknown>).nested as Record<string, unknown>).__proto__ = { root: true };
+
+      const req = mockReq({ body } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      sanitizeInput(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+      // First level __proto__ stripped
+      expect((req.body.level1 as Record<string, unknown>).__proto__).toBeUndefined();
+      // Second level __proto__ stripped
+      expect(((req.body.level1 as Record<string, unknown>).nested as Record<string, unknown>).__proto__).toBeUndefined();
+    });
+
+    it('should strip prototype pollution keys inside arrays', () => {
+      const item: Record<string, unknown> = Object.create(null);
+      item.__proto__ = { injected: true };
+      item.name = 'test';
+
+      const body: Record<string, unknown> = { items: [item] };
+      const req = mockReq({ body } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      sanitizeInput(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+      const firstItem = (req.body.items as any[])[0];
+      expect(firstItem.__proto__).toBeUndefined();
+      expect(firstItem.name).toBe('test');
+    });
+
+    it('should strip constructor and prototype at nested levels', () => {
+      const body: Record<string, unknown> = Object.create(null);
+      body.outer = Object.create(null);
+      (body.outer as Record<string, unknown>).constructor = 'evil';
+      (body.outer as Record<string, unknown>).prototype = { exploit: true };
+      (body.outer as Record<string, unknown>).valid = 'data';
+
+      const req = mockReq({ body } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      sanitizeInput(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+      const outer = req.body.outer as Record<string, unknown>;
+      expect(outer.constructor).toBeUndefined();
+      expect(outer.prototype).toBeUndefined();
+      expect(outer.valid).toBe('data');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // IPv6 address rate limiting
+  // -----------------------------------------------------------------------
+
+  describe('IPv6 rate limiting', () => {
+    beforeEach(() => {
+      _resetRateLimiterState();
+    });
+
+    it('should track IPv6 addresses independently', () => {
+      const ipv6Req = mockReq({
+        socket: { remoteAddress: '::ffff:192.168.1.1' },
+      } as Partial<Request>);
+      const ipv4Req = mockReq({
+        socket: { remoteAddress: '192.168.1.1' },
+      } as Partial<Request>);
+
+      // Exhaust limit for the IPv6-mapped address
+      for (let i = 0; i < 100; i++) {
+        rateLimiter(ipv6Req, mockRes(), trackNext().fn);
+      }
+
+      // IPv6-mapped address should now be blocked
+      const blockedRes = mockRes();
+      const blockedNext = trackNext();
+      rateLimiter(ipv6Req, blockedRes, blockedNext.fn);
+      expect(blockedNext.called).toBe(false);
+      expect(blockedRes._statusCode).toBe(429);
+
+      // Plain IPv4 address should still be allowed (different key)
+      const allowedRes = mockRes();
+      const allowedNext = trackNext();
+      rateLimiter(ipv4Req, allowedRes, allowedNext.fn);
+      expect(allowedNext.called).toBe(true);
+    });
+
+    it('should handle full IPv6 addresses', () => {
+      const req = mockReq({
+        socket: { remoteAddress: '2001:0db8:85a3:0000:0000:8a2e:0370:7334' },
+      } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      rateLimiter(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Very large request body
+  // -----------------------------------------------------------------------
+
+  describe('very large request body', () => {
+    it('should reject extremely large content-length', () => {
+      const limiter = requestSizeLimiter(1024);
+      // 100 MB content-length
+      const req = mockReq({ headers: { 'content-length': '104857600' } } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      limiter(req, res, next.fn);
+
+      expect(next.called).toBe(false);
+      expect(res._statusCode).toBe(413);
+      expect(res._body).toEqual({ success: false, error: 'Payload too large' });
+    });
+
+    it('should reject content-length at exactly limit + 1', () => {
+      const limit = 512;
+      const limiter = requestSizeLimiter(limit);
+      const req = mockReq({ headers: { 'content-length': '513' } } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      limiter(req, res, next.fn);
+
+      expect(next.called).toBe(false);
+      expect(res._statusCode).toBe(413);
+    });
+
+    it('should allow content-length at exactly the limit', () => {
+      const limit = 512;
+      const limiter = requestSizeLimiter(limit);
+      const req = mockReq({ headers: { 'content-length': '512' } } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      limiter(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Malformed Content-Type header
+  // -----------------------------------------------------------------------
+
+  describe('malformed Content-Type handling', () => {
+    it('should pass through with missing Content-Type header', () => {
+      const req = mockReq({ headers: {} } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      // sanitizeInput should not crash on missing content-type
+      sanitizeInput(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+    });
+
+    it('should handle body with non-object types gracefully', () => {
+      // Body set to a string (could happen with malformed Content-Type)
+      const req1 = mockReq({ body: 'raw-string-body' } as Partial<Request>);
+      const res1 = mockRes();
+      const next1 = trackNext();
+
+      sanitizeInput(req1, res1, next1.fn);
+      expect(next1.called).toBe(true);
+
+      // Body set to a number
+      const req2 = mockReq({ body: 42 } as Partial<Request>);
+      const res2 = mockRes();
+      const next2 = trackNext();
+
+      sanitizeInput(req2, res2, next2.fn);
+      expect(next2.called).toBe(true);
+
+      // Body set to boolean
+      const req3 = mockReq({ body: true } as Partial<Request>);
+      const res3 = mockRes();
+      const next3 = trackNext();
+
+      sanitizeInput(req3, res3, next3.fn);
+      expect(next3.called).toBe(true);
+    });
+
+    it('should handle array body without crashing', () => {
+      // If Content-Type is application/json but body is an array
+      const req = mockReq({ body: [{ __proto__: { admin: true } }, { valid: true }] } as Partial<Request>);
+      const res = mockRes();
+      const next = trackNext();
+
+      sanitizeInput(req, res, next.fn);
+
+      expect(next.called).toBe(true);
+    });
+  });
 });
