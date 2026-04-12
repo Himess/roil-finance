@@ -251,20 +251,34 @@ router.post(
       }
       const agreementCid = (agreements[0] as { contractId: string }).contractId;
 
-      // Exercise Mint on the agreement with the attestation + factory
-      // factoryCid and contextContractIds are obtained from the operator's
-      // utility backend (see docs.digitalasset.com/usdc/xreserve/workflows.html)
+      // Fetch BurnMintFactory from DA utility backend (with local ledger fallback)
+      let factoryCid: string = req.body?.factoryCid ?? '';
+      let contextContractIds: string[] = req.body?.contextContractIds ?? [];
+      if (!factoryCid) {
+        const factory = await xreserveClient.fetchMintFactory();
+        if (!factory) {
+          res.status(503).json({
+            success: false,
+            error:
+              'Cannot fetch BurnMintFactory from Digital Asset utility backend. ' +
+              'Mint requires operator coordination. Please use the xReserve UI at ' +
+              'https://digital-asset.github.io/xreserve-deposits/ to claim, ' +
+              'or contact DA support to authorize factory access for Roil.',
+          });
+          return;
+        }
+        factoryCid = factory.factoryCid;
+        contextContractIds = factory.contextContractIds;
+      }
+
       const result = await ledger.exercise(
         BRIDGE_TEMPLATES.UserAgreement,
         agreementCid,
         'BridgeUserAgreement_Mint',
         {
           depositAttestationCid: deposit.attestationContractId,
-          // factoryCid + contextContractIds come from Digital Asset's registry API
-          // In production, fetch these from: ${UTILITY_BACKEND_URL}/api/utilities/v0/registry/burn-mint-instruction/v0/burn-mint-factory
-          // For now, we pass through if frontend provides them in req.body
-          factoryCid: req.body?.factoryCid ?? '',
-          contextContractIds: req.body?.contextContractIds ?? [],
+          factoryCid,
+          contextContractIds,
         },
         [deposit.cantonParty],
       );
@@ -353,10 +367,18 @@ router.post(
       // Encode EVM address as bytes32 (left-padded with zeros)
       const destBytes32 = `0x000000000000000000000000${parsed.data.destinationEvmAddress.slice(2).toLowerCase()}`;
 
-      // Exercise Burn on the agreement.
-      // holdingCids must cover the burn amount — caller should supply them,
-      // or we auto-select from user's USDCx holdings.
-      const holdingCids = req.body?.holdingCids ?? [];
+      // Auto-select user's USDCx holdings to cover the burn amount
+      let holdingCids: string[] = req.body?.holdingCids ?? [];
+      if (holdingCids.length === 0) {
+        holdingCids = await xreserveClient.selectHoldingsForBurn(
+          cantonParty,
+          parsed.data.amount,
+        );
+        logger.info('[xreserve] Auto-selected holdings for burn', {
+          count: holdingCids.length,
+          amount: parsed.data.amount,
+        });
+      }
 
       const result = await ledger.exercise(
         BRIDGE_TEMPLATES.UserAgreement,

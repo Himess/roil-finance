@@ -33,6 +33,18 @@ import { config } from '../config.js';
 export const CANTON_XRESERVE_DOMAIN = 10001;
 export const ETHEREUM_DOMAIN = 0;
 
+/** Digital Asset utility backend URLs */
+export const UTILITY_BACKEND: Record<'mainnet' | 'testnet', string> = {
+  mainnet: 'https://api.utilities.digitalasset.com',
+  testnet: 'https://api.utilities.digitalasset-staging.com',
+};
+
+export function getUtilityBackend(): string {
+  return config.network === 'mainnet'
+    ? UTILITY_BACKEND.mainnet
+    : UTILITY_BACKEND.testnet;
+}
+
 /** xReserve Ethereum source chain — only Ethereum is supported today */
 export type XReserveSource = 'ethereum' | 'sepolia';
 
@@ -100,7 +112,13 @@ export const BRIDGE_TEMPLATES = {
     '#utility-bridge-v0:Utility.Bridge.V0.Agreement.User:BridgeUserAgreement',
   DepositAttestation:
     '#utility-bridge-v0:Utility.Bridge.V0.Attestation.Deposit:DepositAttestation',
+  BurnMintFactory:
+    '#utility-bridge-v0:Utility.Bridge.V0.Factory:BurnMintFactory',
 } as const;
+
+/** Splice Token Standard Holding interface (for USDCx balances) */
+export const SPLICE_HOLDING_INTERFACE =
+  '#splice-api-token-holding-v1:Splice.Api.Token.HoldingV1:Holding';
 
 export type DepositStatus =
   | 'pending_approval'
@@ -428,6 +446,218 @@ export class XReserveClient {
   // -------------------------------------------------------------------------
   // Helpers for frontend
   // -------------------------------------------------------------------------
+
+  /**
+   * Auto-select user's USDCx Holding contracts covering the burn amount.
+   * Queries the Splice Token Standard Holding interface via the Ledger API.
+   *
+   * Returns contractIds sorted by amount (largest first), selected greedily
+   * until total >= burnAmount. Throws if user lacks sufficient USDCx.
+   */
+  async selectHoldingsForBurn(
+    cantonParty: string,
+    burnAmountUnits: string, // 6-decimal integer
+  ): Promise<string[]> {
+    try {
+      const url = `${config.jsonApiUrl}/v2/state/active-contracts`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filter: {
+            filtersByParty: {
+              [cantonParty]: {
+                cumulative: [
+                  {
+                    identifierFilter: {
+                      InterfaceFilter: {
+                        value: {
+                          interfaceId: SPLICE_HOLDING_INTERFACE,
+                          includeInterfaceView: true,
+                          includeCreatedEventBlob: false,
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          verbose: false,
+          activeAtOffset: 0,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Holding query failed: ${res.status}`);
+      }
+
+      const data = (await res.json()) as {
+        contractEntries?: Array<{
+          activeContract?: {
+            createdEvent?: {
+              contractId?: string;
+              interfaceViews?: Array<{
+                viewValue?: {
+                  instrumentId?: { id?: string };
+                  amount?: string;
+                  owner?: string;
+                };
+              }>;
+            };
+          };
+        }>;
+      };
+
+      type Entry = { contractId: string; amount: bigint };
+      const usdcxEntries: Entry[] = [];
+
+      for (const e of data.contractEntries ?? []) {
+        const ev = e.activeContract?.createdEvent;
+        if (!ev?.contractId) continue;
+        const view = ev.interfaceViews?.[0]?.viewValue;
+        if (view?.instrumentId?.id !== 'USDCx') continue;
+        if (!view.amount) continue;
+        // Splice amounts are decimal strings with 10 decimals — convert to 6-decimal units
+        // 1 USDCx in Splice (10 decimals) = 1_000_000 units (6 decimals)
+        const raw = view.amount;
+        const [whole, frac = ''] = raw.split('.');
+        const frac6 = (frac + '000000').slice(0, 6);
+        const units = BigInt(whole) * 1_000_000n + BigInt(frac6 || '0');
+        usdcxEntries.push({ contractId: ev.contractId, amount: units });
+      }
+
+      // Sort by amount descending, greedy select
+      usdcxEntries.sort((a, b) => (b.amount > a.amount ? 1 : -1));
+
+      const need = BigInt(burnAmountUnits);
+      const selected: string[] = [];
+      let total = 0n;
+      for (const entry of usdcxEntries) {
+        if (total >= need) break;
+        selected.push(entry.contractId);
+        total += entry.amount;
+      }
+
+      if (total < need) {
+        throw new Error(
+          `Insufficient USDCx: have ${total.toString()}, need ${need.toString()}`,
+        );
+      }
+      return selected;
+    } catch (err) {
+      logger.error('[xreserve] selectHoldingsForBurn failed', {
+        error: String(err),
+      });
+      throw err;
+    }
+  }
+
+  /**
+   * Fetch BurnMintFactory contract + disclosed contracts from Digital Asset's
+   * utility backend. Required for BridgeUserAgreement_Mint and _Burn.
+   *
+   * Best-effort — if DA's backend is unreachable, fall back to querying the
+   * local ledger for any visible BurnMintFactory contract.
+   */
+  async fetchMintFactory(): Promise<{
+    factoryCid: string;
+    contextContractIds: string[];
+  } | null> {
+    const operator = getOperator();
+
+    // Try DA utility backend (Token Standard pattern)
+    const backend = getUtilityBackend();
+    const paths = [
+      `/api/token-standard/v0/registrars/${encodeURIComponent(operator)}/registry/burn-mint-instruction/v1/burn-mint-factory`,
+      `/api/utilities/v0/registry/burn-mint-instruction/v1/burn-mint-factory`,
+      `/registry/burn-mint-instruction/v1/burn-mint-factory`,
+    ];
+
+    for (const path of paths) {
+      try {
+        const res = await fetch(`${backend}${path}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            choiceArguments: {},
+            excludeDebugFields: true,
+          }),
+        });
+
+        if (!res.ok) continue;
+
+        const data = (await res.json()) as {
+          factoryId?: string;
+          choiceContext?: {
+            disclosedContracts?: Array<{ contractId?: string }>;
+          };
+        };
+
+        if (data.factoryId) {
+          return {
+            factoryCid: data.factoryId,
+            contextContractIds: (data.choiceContext?.disclosedContracts ?? [])
+              .map(c => c.contractId ?? '')
+              .filter(Boolean),
+          };
+        }
+      } catch {
+        // Try next path
+      }
+    }
+
+    // Fallback: query local ledger for BurnMintFactory contracts
+    // (requires operator to have disclosed them to our participant)
+    try {
+      const url = `${config.jsonApiUrl}/v2/state/active-contracts`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filter: {
+            filtersByParty: {
+              [operator]: {
+                cumulative: [
+                  {
+                    identifierFilter: {
+                      TemplateFilter: {
+                        value: {
+                          templateId: BRIDGE_TEMPLATES.BurnMintFactory,
+                          includeCreatedEventBlob: false,
+                        },
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
+          verbose: false,
+          activeAtOffset: 0,
+        }),
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as {
+          contractEntries?: Array<{
+            activeContract?: { createdEvent?: { contractId?: string } };
+          }>;
+        };
+        const first =
+          data.contractEntries?.[0]?.activeContract?.createdEvent?.contractId;
+        if (first) {
+          return { factoryCid: first, contextContractIds: [] };
+        }
+      }
+    } catch (err) {
+      logger.warn('[xreserve] Ledger factory fallback failed', {
+        error: String(err),
+      });
+    }
+
+    return null;
+  }
 
   /**
    * Build the deposit transaction parameters for the frontend.
