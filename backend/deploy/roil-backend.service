@@ -1,0 +1,20 @@
+[Unit]
+Description=Roil Finance Backend
+After=network.target docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/roil-backend
+ExecStart=/usr/bin/node dist/index.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=append:/var/log/roil-backend.log
+StandardError=append:/var/log/roil-backend.log
+EnvironmentFile=/root/roil-backend/.env
+
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
