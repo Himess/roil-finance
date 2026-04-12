@@ -139,11 +139,18 @@ function scheduleKey(user: string, source: string, target: string): string {
  * schedule from being processed concurrently by overlapping cron ticks or
  * trigger events within the same process.
  *
+ * Value is the timestamp (ms) when the lock was acquired. Locks automatically
+ * expire after LOCK_TTL_MS to prevent stale locks from permanently blocking
+ * a schedule (e.g. if the process crashes mid-execution).
+ *
  * NOTE: This only protects against same-process duplicates. For multi-instance
  * deployment (horizontal scaling), use a distributed lock (e.g. Redis SETNX
  * with TTL) keyed by schedule contract ID.
  */
-const executingSchedules = new Set<string>();
+const executingSchedules = new Map<string, number>();
+
+/** Lock TTL: 5 minutes. If a lock is older than this, it is considered stale. */
+const LOCK_TTL_MS = 300_000;
 
 // ---------------------------------------------------------------------------
 // DCAEngine
@@ -204,8 +211,9 @@ export class DCAEngine {
       for (const schedule of activeSchedules) {
         const { payload } = schedule;
 
-        // Skip if this schedule is already being executed (concurrent protection)
-        if (executingSchedules.has(schedule.contractId)) {
+        // Skip if this schedule is already being executed (concurrent protection with TTL)
+        const lockTime = executingSchedules.get(schedule.contractId);
+        if (lockTime && Date.now() - lockTime < LOCK_TTL_MS) {
           logger.info(`Skipping schedule ${schedule.contractId} — already executing`, { component: 'dca' });
           continue;
         }
@@ -224,7 +232,7 @@ export class DCAEngine {
           { component: 'dca' },
         );
 
-        executingSchedules.add(schedule.contractId);
+        executingSchedules.set(schedule.contractId, Date.now());
         try {
           // 0. Fee budget check — ensure platform has enough CC for this DCA execution
           // Estimate: 1 swap + 2 ledger commands (ExecuteDCA + CompleteDCAExecution)
@@ -482,13 +490,14 @@ export async function handleDCAScheduleEvent(
     return { executed: false };
   }
 
-  // Concurrent execution guard (same-process only)
-  if (executingSchedules.has(schedule.contractId)) {
+  // Concurrent execution guard (same-process only, with TTL)
+  const lockTime = executingSchedules.get(schedule.contractId);
+  if (lockTime && Date.now() - lockTime < LOCK_TTL_MS) {
     logger.info(`[dca] Skipping event-driven schedule ${schedule.contractId} — already executing`, { component: 'dca-trigger' });
     return { executed: false };
   }
 
-  executingSchedules.add(schedule.contractId);
+  executingSchedules.set(schedule.contractId, Date.now());
 
   logger.info(
     `[dca] Event-driven execution: ${payload.sourceAsset.symbol} -> ${payload.targetAsset.symbol}, user=${payload.user}`,
@@ -524,7 +533,7 @@ export async function handleDCAScheduleEvent(
       executionCid,
       'CompleteDCAExecution',
       {
-        receivedAmount: String(netOutputAmount),
+        receivedAmount: numberToDecimal(netOutputAmount),
         completedAt: new Date().toISOString(),
       },
       platform,

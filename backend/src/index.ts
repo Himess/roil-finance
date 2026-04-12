@@ -11,6 +11,7 @@ import { dcaEngine } from './engine/dca.js';
 import { rewardsEngine } from './engine/rewards.js';
 import { compoundEngine } from './engine/compound.js';
 import { priceOracle } from './services/price-oracle.js';
+import { cctpClient } from './services/cctp-client.js';
 import { logger } from './monitoring/logger.js';
 import { metrics, METRICS } from './monitoring/metrics.js';
 import { transactionStream } from './services/transaction-stream.js';
@@ -141,6 +142,9 @@ const server = app.listen(config.port, () => {
     });
   }
 
+  // Start CCTP attestation poller (every 60s)
+  cctpClient.startPolling(60_000);
+
   logger.info('Roil backend started', {
     port: config.port,
     jsonApiUrl: config.jsonApiUrl,
@@ -163,6 +167,9 @@ function gracefulShutdown(signal: string): void {
 
   // Stop price oracle polling
   priceOracle.stopPolling();
+
+  // Stop CCTP poller
+  cctpClient.stopPolling();
 
   // Stop all cron jobs
   const tasks = cron.getTasks();

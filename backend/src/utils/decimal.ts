@@ -181,20 +181,5 @@ export function decimalEq(a: string, b: string): boolean {
 // Utility
 // ---------------------------------------------------------------------------
 
-/** Return the absolute value of a Daml Decimal string. */
-export function decimalAbs(a: string): string {
-  return numberToDecimal(Math.abs(decimalToNumber(a)));
-}
-
-/** Return the maximum of two Daml Decimal strings. */
-export function decimalMax(a: string, b: string): string {
-  return decimalGte(a, b) ? a : b;
-}
-
-/** Return the minimum of two Daml Decimal strings. */
-export function decimalMin(a: string, b: string): string {
-  return decimalLte(a, b) ? a : b;
-}
-
 /** Zero as a Daml Decimal string. */
 export const DECIMAL_ZERO = numberToDecimal(0);

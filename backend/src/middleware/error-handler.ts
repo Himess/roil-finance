@@ -4,6 +4,7 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { AppError } from '../utils/errors.js';
+import { logger } from '../monitoring/logger.js';
 
 /**
  * Global error-handling middleware.
@@ -17,8 +18,11 @@ export function globalErrorHandler(
   res: Response,
   _next: NextFunction,
 ): void {
-  // Structured log
-  console.error(`[ERROR] ${req.method} ${req.url}:`, {
+  const correlationId = (req as any).correlationId || 'unknown';
+
+  // Structured log with correlation ID
+  logger.error(`[ERROR] ${req.method} ${req.url}`, {
+    correlationId,
     message: err.message,
     code: err instanceof AppError ? err.code : 'INTERNAL',
     stack: process.env.NODE_ENV === 'development' ? err.stack : undefined,
@@ -30,6 +34,7 @@ export function globalErrorHandler(
       error: err.message,
       code: err.code,
       retryable: err.isRetryable,
+      correlationId,
     });
     return;
   }
@@ -39,5 +44,6 @@ export function globalErrorHandler(
     success: false,
     error: 'Internal server error',
     code: 'INTERNAL',
+    correlationId,
   });
 }

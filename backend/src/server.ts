@@ -15,10 +15,13 @@ import { metricsRouter } from './routes/metrics.js';
 import { adminRouter } from './routes/admin.js';
 import { swapRouter } from './routes/swap.js';
 import { whitelistRouter } from './routes/whitelist.js';
-import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter } from './middleware/security.js';
+import { cctpRouter } from './routes/cctp.js';
+import { cctpClient } from './services/cctp-client.js';
+import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter, auditLogger } from './middleware/security.js';
 // For multi-instance production deployment with Redis:
 // import { rateLimiter } from './middleware/rate-limiter.js';
 import { authMiddleware } from './middleware/auth.js';
+import { idempotencyMiddleware } from './middleware/idempotency.js';
 import { metricsMiddleware } from './middleware/metrics-middleware.js';
 import { logger } from './monitoring/logger.js';
 import { globalErrorHandler } from './middleware/error-handler.js';
@@ -66,6 +69,12 @@ export function createApp(): express.Express {
   app.use(sanitizeInput);
   app.use(authMiddleware);
 
+  // Idempotency support — cache POST/PUT responses by Idempotency-Key header
+  app.use(idempotencyMiddleware);
+
+  // Audit logging for state-changing requests (POST, PUT, DELETE)
+  app.use(auditLogger);
+
   // Metrics collection (before request logging so it captures all requests)
   app.use(metricsMiddleware);
 
@@ -99,6 +108,7 @@ export function createApp(): express.Express {
   app.use('/api/transfers', transfersRouter);
   app.use('/api/admin', adminRouter);
   app.use('/api/swap', swapRouter);
+  app.use('/api/cctp', cctpRouter);
   app.use('/api/whitelist', whitelistRouter);
   app.use('/metrics', metricsRouter);
 

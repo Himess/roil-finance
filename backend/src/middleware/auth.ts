@@ -35,7 +35,7 @@ declare global {
 // Paths that skip authentication
 // ---------------------------------------------------------------------------
 
-const PUBLIC_PATHS = new Set(['/health', '/metrics', '/api/health']);
+const PUBLIC_PATHS = new Set(['/health', '/metrics', '/api/health', '/api/cctp/chains']);
 
 // ---------------------------------------------------------------------------
 // Startup validation — call this at server boot to fail fast on misconfig

@@ -174,7 +174,18 @@ adminRouter.use(requireAdmin);
  *
  * Get current platform admin status.
  */
-adminRouter.get('/status', (_req: Request, res: Response) => {
+adminRouter.get('/status', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
+  logger.info('Admin action', {
+    action: 'GET_STATUS',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: {},
+  });
+
   res.json({
     success: true,
     data: {
@@ -195,6 +206,10 @@ adminRouter.get('/status', (_req: Request, res: Response) => {
  * Pause all rebalancing and DCA execution globally.
  */
 adminRouter.post('/pause', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const reason = (req.body?.reason as string) || '';
   const actor = getActorParty(req);
 
@@ -207,6 +222,13 @@ adminRouter.post('/pause', (req: Request, res: Response) => {
 
   adminState.paused = true;
   addAuditEntry('pause', actor, { reason });
+
+  logger.info('Admin action', {
+    action: 'PAUSE',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { reason },
+  });
 
   res.json({
     success: true,
@@ -224,6 +246,10 @@ adminRouter.post('/pause', (req: Request, res: Response) => {
  * Resume all operations (clears both pause and freeze).
  */
 adminRouter.post('/resume', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const actor = getActorParty(req);
 
   if (!adminState.paused && !adminState.frozen) {
@@ -237,6 +263,13 @@ adminRouter.post('/resume', (req: Request, res: Response) => {
   adminState.paused = false;
   adminState.frozen = false;
   addAuditEntry('resume', actor, { wasFrozen });
+
+  logger.info('Admin action', {
+    action: 'RESUME',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { wasFrozen },
+  });
 
   res.json({
     success: true,
@@ -254,6 +287,10 @@ adminRouter.post('/resume', (req: Request, res: Response) => {
  * Update the platform fee rate.
  */
 adminRouter.put('/fee-rate', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const parsed = FeeRateSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -271,6 +308,13 @@ adminRouter.put('/fee-rate', (req: Request, res: Response) => {
     newRate: parsed.data.feeRate,
   });
 
+  logger.info('Admin action', {
+    action: 'UPDATE_FEE_RATE',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { previousRate, newRate: parsed.data.feeRate },
+  });
+
   res.json({
     success: true,
     data: {
@@ -286,6 +330,10 @@ adminRouter.put('/fee-rate', (req: Request, res: Response) => {
  * Update the list of allowed asset symbols.
  */
 adminRouter.put('/allowed-assets', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const parsed = AllowedAssetsSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({
@@ -301,6 +349,13 @@ adminRouter.put('/allowed-assets', (req: Request, res: Response) => {
   addAuditEntry('update-allowed-assets', actor, {
     previousAssets,
     newAssets: parsed.data.assets,
+  });
+
+  logger.info('Admin action', {
+    action: 'UPDATE_ALLOWED_ASSETS',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { previousAssets, newAssets: parsed.data.assets },
   });
 
   res.json({
@@ -319,6 +374,10 @@ adminRouter.put('/allowed-assets', (req: Request, res: Response) => {
  * This is stronger than pause — it also blocks manual operations.
  */
 adminRouter.post('/emergency-freeze', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const reason = (req.body?.reason as string) || 'No reason provided';
   const actor = getActorParty(req);
 
@@ -339,6 +398,13 @@ adminRouter.post('/emergency-freeze', (req: Request, res: Response) => {
     reason,
   });
 
+  logger.info('Admin action', {
+    action: 'EMERGENCY_FREEZE',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { reason },
+  });
+
   res.json({
     success: true,
     data: {
@@ -357,7 +423,18 @@ adminRouter.post('/emergency-freeze', (req: Request, res: Response) => {
  * Query parameter `limit` controls how many entries to return (default: 50).
  */
 adminRouter.get('/audit-log', (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
   const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 500);
+
+  logger.info('Admin action', {
+    action: 'GET_AUDIT_LOG',
+    party: req.actAs?.[0] || req.partyId,
+    timestamp: new Date().toISOString(),
+    details: { limit },
+  });
 
   res.json({
     success: true,
