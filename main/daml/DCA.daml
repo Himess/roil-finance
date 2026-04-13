@@ -50,7 +50,7 @@ template DCASchedule
         executedAt : Time
       controller platform
       do
-        assertMsg "DCA schedule is not active" isActive
+        assertMsg "DCA schedule must be active" isActive
         let newSchedule = this with totalExecutions = totalExecutions + 1
         scheduleCid <- create newSchedule
         executionCid <- create DCAExecution with

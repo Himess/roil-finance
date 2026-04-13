@@ -50,6 +50,8 @@ template TreasuryPool
       do
         -- Validate treasury is not paused
         assertMsg "Treasury is paused" (not isPaused)
+        -- Validate assets are different
+        assertMsg "Cannot swap identical assets" (fromAsset /= toAsset)
         -- Validate amounts
         assertMsg "From amount must be positive" (fromAmount > 0.0)
         assertMsg "To amount must be positive" (toAmount > 0.0)

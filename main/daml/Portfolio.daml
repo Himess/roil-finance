@@ -140,7 +140,7 @@ template Portfolio
         requestedAt : Time
       controller platform
       do
-        assertMsg "Portfolio is not active" isActive
+        assertMsg "Portfolio must be active" isActive
         let drift = calcMaxDrift targets holdings
         -- For auto-trigger, verify drift exceeds threshold
         case triggerMode of

@@ -1,0 +1,388 @@
+-- | Tests for Referral and ReferralCredit contracts
+module TestRewards where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import RewardTracker
+
+-- ============================================================================
+-- REFERRAL TESTS
+-- ============================================================================
+
+-- | Test 1: CreditReferrer — verify referral credit created with correct bonus amount
+testCreditReferrer : Script ()
+testCreditReferrer = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+
+  -- Create referral: Alice referred Bob, 10% bonus
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  -- Credit Alice for Bob's TX of 500
+  creditCid <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      creditedAt = t1
+
+  -- Verify ReferralCredit created with correct amount (10% of 500 = 50)
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 1 referral credit" (length credits == 1)
+  let (_, credit) = head credits
+  assertMsg "Credit amount should be 50.0" (credit.amount == 50.0)
+  assertMsg "Referrer should be alice" (credit.referrer == alice)
+  assertMsg "Referee should be bob" (credit.referee == bob)
+  assertMsg "CreditedAt should match" (credit.creditedAt == t1)
+
+  -- Referral should still exist (nonconsuming choice)
+  referrals <- query @Referral alice
+  assertMsg "Referral should still exist" (length referrals == 1)
+
+  pure ()
+
+-- | Test 2: ReferralCredit creation — verify multiple credits accumulate
+testReferralCreditAccumulation : Script ()
+testReferralCreditAccumulation = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+  let t3 = time (date 2026 Mar 15) 16 0 0
+
+  -- Create referral with 5% bonus
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 5.0
+      createdAt = t0
+
+  -- Credit 1: Bob TX = 200 -> Alice gets 5% = 10
+  creditCid1 <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 200.0
+      creditedAt = t1
+
+  -- Credit 2: Bob TX = 1000 -> Alice gets 5% = 50
+  creditCid2 <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 1000.0
+      creditedAt = t2
+
+  -- Credit 3: Bob TX = 50 -> Alice gets 5% = 2.5
+  creditCid3 <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 50.0
+      creditedAt = t3
+
+  -- Verify 3 credits exist
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 3 referral credits" (length credits == 3)
+
+  -- Verify total amount: 10 + 50 + 2.5 = 62.5
+  let totalAmount = foldl (\acc (_, c) -> acc + c.amount) 0.0 credits
+  assertMsg "Total credit amount should be 62.5" (totalAmount == 62.5)
+
+  pure ()
+
+-- | Test 3: Bonus calculation — verify different bonus percentages
+testBonusCalculation : Script ()
+testBonusCalculation = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  charlie <- allocateParty "Charlie"
+  dave <- allocateParty "Dave"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+
+  -- Create referral with 0% bonus (no reward)
+  referralCid0 <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 0.0
+      createdAt = t0
+
+  -- 0% of 1000 = 0
+  creditCid0 <- submit platform do
+    exerciseCmd referralCid0 CreditReferrer with
+      refereeTxValue = 1000.0
+      creditedAt = t1
+
+  credits0 <- query @ReferralCredit alice
+  assertMsg "Should have 1 credit" (length credits0 == 1)
+  let (_, c0) = head credits0
+  assertMsg "Credit with 0% bonus should be 0.0" (c0.amount == 0.0)
+
+  -- Create referral with 25% bonus
+  referralCid25 <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = charlie
+      referee = dave
+      isActive = True
+      referrerBonusPct = 25.0
+      createdAt = t0
+
+  -- 25% of 400 = 100
+  creditCid25 <- submit platform do
+    exerciseCmd referralCid25 CreditReferrer with
+      refereeTxValue = 400.0
+      creditedAt = t1
+
+  credits25 <- query @ReferralCredit charlie
+  assertMsg "Should have 1 credit for charlie" (length credits25 == 1)
+  let (_, c25) = head credits25
+  assertMsg "Credit with 25% bonus should be 100.0" (c25.amount == 100.0)
+
+  pure ()
+
+-- | Test 4: Inactive referral — CreditReferrer should fail
+testInactiveReferralCreditFails : Script ()
+testInactiveReferralCreditFails = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+
+  -- Create inactive referral
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = False
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  -- CreditReferrer on inactive referral should fail
+  submitMustFail platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      creditedAt = t1
+
+  -- No credits should exist
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 0 credits" (length credits == 0)
+
+  pure ()
+
+-- | Test 5: CreditReferrer with zero/negative TX value — should fail
+testCreditReferrerInvalidTxValue : Script ()
+testCreditReferrerInvalidTxValue = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  -- Zero TX value should fail
+  submitMustFail platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 0.0
+      creditedAt = t1
+
+  -- Negative TX value should fail
+  submitMustFail platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = -100.0
+      creditedAt = t1
+
+  -- No credits should exist
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 0 credits after failed attempts" (length credits == 0)
+
+  pure ()
+
+-- | Test 6: Self-referral — ensure constraint prevents referrer == referee
+testSelfReferralRejected : Script ()
+testSelfReferralRejected = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  -- Self-referral should fail (ensure referrer /= referee)
+  submitMustFail platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = alice
+      isActive = True
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  pure ()
+
+-- | Test 7: Invalid bonus percentage — ensure constraint rejects it
+testInvalidBonusPct : Script ()
+testInvalidBonusPct = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+
+  -- Negative bonus should fail
+  submitMustFail platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = -5.0
+      createdAt = t0
+
+  -- Bonus > 100% should fail
+  submitMustFail platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 101.0
+      createdAt = t0
+
+  -- Boundary: 100% should succeed
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 100.0
+      createdAt = t0
+
+  referrals <- query @Referral alice
+  assertMsg "Should have 1 referral at 100%" (length referrals == 1)
+
+  pure ()
+
+-- | Test 8: Nonconsuming behavior — CreditReferrer does not archive referral
+testCreditReferrerNonconsuming : Script ()
+testCreditReferrerNonconsuming = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+  let t2 = time (date 2026 Mar 15) 14 0 0
+  let t3 = time (date 2026 Mar 15) 16 0 0
+  let t4 = time (date 2026 Mar 15) 18 0 0
+  let t5 = time (date 2026 Mar 15) 20 0 0
+
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  -- Exercise CreditReferrer 5 times
+  submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 100.0; creditedAt = t1
+  submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 200.0; creditedAt = t2
+  submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 300.0; creditedAt = t3
+  submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 400.0; creditedAt = t4
+  submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0; creditedAt = t5
+
+  -- Referral should still exist
+  referrals <- query @Referral alice
+  assertMsg "Referral should still exist after 5 credits" (length referrals == 1)
+
+  -- Should have 5 credits
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 5 referral credits" (length credits == 5)
+
+  -- Total: 10 + 20 + 30 + 40 + 50 = 150
+  let totalAmount = foldl (\acc (_, c) -> acc + c.amount) 0.0 credits
+  assertMsg "Total credit amount should be 150.0" (totalAmount == 150.0)
+
+  pure ()
+
+-- | Test 9: Only platform can exercise CreditReferrer
+testCreditReferrerAuth : Script ()
+testCreditReferrerAuth = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let t1 = time (date 2026 Mar 15) 12 0 0
+
+  referralCid <- submit platform do
+    createCmd Referral with
+      platform
+      referrer = alice
+      referee = bob
+      isActive = True
+      referrerBonusPct = 10.0
+      createdAt = t0
+
+  -- Alice (referrer) should NOT be able to credit herself
+  submitMustFail alice do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      creditedAt = t1
+
+  -- Bob (referee) should NOT be able to credit the referrer
+  submitMustFail bob do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      creditedAt = t1
+
+  -- Only platform should be able to credit
+  creditCid <- submit platform do
+    exerciseCmd referralCid CreditReferrer with
+      refereeTxValue = 500.0
+      creditedAt = t1
+
+  credits <- query @ReferralCredit alice
+  assertMsg "Should have 1 credit (from platform)" (length credits == 1)
+
+  pure ()

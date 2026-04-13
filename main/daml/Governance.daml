@@ -63,6 +63,12 @@ template RoilAdmin
       do
         assertMsg "Fee must be between 0 and 100" (newFeePct >= 0.0 && newFeePct <= 100.0)
         assertMsg "Cannot update while frozen" (not isFrozen)
+        -- Create an audit record of the fee update
+        _ <- create GovernanceAuditLog with
+          platform
+          action = "FEE_UPDATE"
+          reason = "Fee rate changed from " <> show rebalanceFeePct <> " to " <> show newFeePct
+          timestamp = changedAt
         create this with
           rebalanceFeePct = newFeePct
           updatedAt = changedAt
