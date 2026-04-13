@@ -16,7 +16,7 @@ set -euo pipefail
 URL="${1:-http://localhost:3975}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DAR_PATH="${2:-$PROJECT_DIR/main/.daml/dist/roil-finance-0.1.0.dar}"
+DAR_PATH="${2:-$PROJECT_DIR/main/.daml/dist/roil-finance-0.2.0.dar}"
 
 echo "=== Roil — DAR Deployment ==="
 echo ""

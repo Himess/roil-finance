@@ -42,23 +42,28 @@ services:
       retries: 5
       start_period: 15s
 
-  rebalancer-frontend:
-    build:
-      context: ./ui
-      dockerfile: Dockerfile
-    container_name: rebalancer-frontend
-    ports:
-      - "5173:8080"
-    depends_on:
-      rebalancer-backend:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-      start_period: 5s
+  # NOTE: The frontend UI has been moved to a separate private repository
+  # (Himess/roil-app) and is deployed via Vercel. The ./ui directory in this
+  # repo contains the original open-source dashboard but may not have a
+  # Dockerfile. Uncomment the block below if you restore a local UI build.
+  #
+  # rebalancer-frontend:
+  #   build:
+  #     context: ./ui
+  #     dockerfile: Dockerfile
+  #   container_name: rebalancer-frontend
+  #   ports:
+  #     - "5173:8080"
+  #   depends_on:
+  #     rebalancer-backend:
+  #       condition: service_healthy
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 3
+  #     start_period: 5s
 
 networks:
   default:
