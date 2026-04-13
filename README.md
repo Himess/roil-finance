@@ -76,7 +76,7 @@ Backend (Express + TypeScript)
   +-- Scan API Client
   |
 Canton Network
-  |-- 6 Daml Contract Modules
+  |-- 10 Daml Contract Modules
   |-- CIP-0056 Token Standard
   |-- Ledger API v2
   +-- Canton dApp SDK
@@ -302,7 +302,11 @@ roil-finance/
 |       |-- DCA.daml                   # DCASchedule, DCAExecution, DCALog
 |       |-- RewardTracker.daml         # RewardTracker, RewardPayout, Referral
 |       |-- FeaturedApp.daml           # FeaturedAppConfig, ActivityRecord
-|       +-- TokenTransfer.daml         # TransferRequest, SwapRequest, logs
+|       |-- TokenTransfer.daml         # TransferRequest, SwapRequest, logs
+|       |-- TransferPreapproval.daml   # Auto-accept transfer patterns
+|       |-- Treasury.daml              # Treasury swap with oracle pricing + spread
+|       |-- Whitelist.daml             # Invite code whitelist (max 1000 users)
+|       +-- Governance.daml            # Freeze, pause, fee updates, audit logs
 |
 |-- test/                              # Daml test suite
 |   +-- daml/
@@ -502,6 +506,8 @@ For bug reports and feature requests, please [open an issue](https://github.com/
 ## License
 
 This project is licensed under the [MIT License](./LICENSE).
+
+> **Note:** The frontend UI is maintained in a separate private repository ([Himess/roil-app](https://github.com/Himess/roil-app)) to protect the landing page and design assets. The `ui/` directory in this repo contains the original open-source React dashboard.
 
 ---
 

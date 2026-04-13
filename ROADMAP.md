@@ -3,7 +3,7 @@
 ## What We've Built (Today)
 
 ### Core Platform
-- 6 Daml smart contract modules (Portfolio, DCA, RewardTracker, FeaturedApp, TokenTransfer, Types)
+- 10 Daml smart contract modules (Portfolio, DCA, RewardTracker, FeaturedApp, TokenTransfer, TransferPreapproval, Treasury, Whitelist, Governance, Types)
 - 26 Daml test scripts with comprehensive coverage
 - TypeScript/Express backend with 17 test files, 200+ test cases
 - React 19 frontend with Plus Jakarta Sans, light theme design
