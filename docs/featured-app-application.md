@@ -39,7 +39,7 @@ Canton's sub-transaction privacy lets Roil keep each user's portfolio confidenti
 
 | Layer | Stack |
 |---|---|
-| **Smart contracts** | Daml SDK 3.4.11 — 10 modules (1,786 LOC), 146 passing tests (4,300 LOC test coverage). Contract keys removed for Daml-LF 3.x compatibility. |
+| **Smart contracts** | Daml SDK 3.4.11 — 10 modules (1,786 LOC), 157 passing tests (4,300 LOC test coverage). Contract keys removed for Daml-LF 3.x compatibility. |
 | **Splice / Canton integration** | `splice-api-featured-app-v1`, `splice-api-token-holding-v1`, `splice-api-token-metadata-v1`, `splice-api-token-transfer-instruction-v1`, `splice-api-token-allocation-v1`, `splice-api-token-allocation-request-v1` — declared as data-dependencies, transfers use the Splice TransferInstruction factory pattern for atomic settlement. |
 | **Backend** | TypeScript / Express, Canton JSON Ledger API v2, Node 20, OpenTelemetry, Prometheus metrics, JWT auth (HS256 / RS256 / ES256), circuit breaker + retry with jitter, per-key idempotency locks. |
 | **Frontend** | React 19 + Vite + Tailwind, deployed on Vercel with custom domain `roil.app`. Persistent TestNet network badge + demo-mode banner for transparency. |
@@ -87,7 +87,7 @@ Conservative estimate, assuming 100 active whitelisted users by month 6:
 
 ## 8. Security & Operational Readiness
 
-- **Daml tests:** 146 scripts covering lifecycle, authorization, ensure clauses, failure modes, reward distribution, governance transitions, preapproval flows.
+- **Daml tests:** 157 scripts covering lifecycle, authorization, ensure clauses, failure modes, reward distribution, governance transitions, preapproval flows.
 - **Backend test suite:** vitest — config validation, admin party guards, retry/circuit-breaker behaviour, rate-limit store, idempotency concurrency.
 - **OpenAPI spec:** `backend/src/openapi.yaml` documents every endpoint; deployed schema matches implementation.
 - **Monitoring:** Prometheus + Grafana stack; backend emits request duration, circuit-breaker state, DCA execution count, reward distribution count.
@@ -96,8 +96,8 @@ Conservative estimate, assuming 100 active whitelisted users by month 6:
 
 ## 9. Current Deployment Status
 
-- **DevNet (`159.195.71.102`):** Splice v0.5.17 validator — 6 containers healthy for 7+ days. Roil DAR v0.3.1 built and test suite 146/146 passing.
-- **TestNet (`159.195.78.106`):** Splice v0.5.17 validator + Roil backend (systemd, live at `https://api.roil.app`). DAR v0.3.1 uploaded. Frontend at `https://roil.app`.
+- **DevNet (`159.195.71.102`):** Splice v0.5.18 validator — 6 containers healthy for 7+ days. Roil DAR v0.3.3 built and test suite 157/157 passing.
+- **TestNet (`159.195.78.106`):** Splice v0.5.18 validator + Roil backend (systemd, live at `https://api.roil.app`). DAR v0.3.3 uploaded. Frontend at `https://roil.app`.
 - **MainNet (`159.195.76.220`):** VPS provisioned; awaiting Pedro's onboarding secret on 2026-04-20.
 
 ## 10. Roadmap (post-FA approval)
@@ -142,7 +142,7 @@ data-dependencies:
 ### Appendix B — Key file references for reviewers
 
 - Daml contracts: [`main/daml/`](../main/daml/)
-- Test scripts: [`test/daml/`](../test/daml/) — 146 scripts
+- Test scripts: [`test/daml/`](../test/daml/) — 157 scripts
 - Backend engines: [`backend/src/engine/`](../backend/src/engine/) — rebalance, DCA, compound, featured-app, trigger-manager, treasury, rewards, whitelist
 - Backend services: [`backend/src/services/`](../backend/src/services/) — cantex-client, temple-client, xreserve-client, price-oracle, yield-sources, admin-party-validator
 - Security notes: [`../SECURITY.md`](../SECURITY.md)

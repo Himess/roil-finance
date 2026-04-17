@@ -25,6 +25,17 @@
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { logger } from '../monitoring/logger.js';
 import { config } from '../config.js';
+import { buildJwt } from '../ledger.js';
+
+/**
+ * Ledger API requests from this module all need a platform-signed JWT;
+ * devnet/testnet/mainnet participants gate these endpoints. buildJwt is
+ * deliberately short-lived (1h) so we mint on every request rather than
+ * memoize — the cost is ~microseconds and the isolation is cleaner.
+ */
+function ledgerAuthHeader(parties: string[] = [config.platformParty]): string {
+  return `Bearer ${buildJwt(parties, parties)}`;
+}
 
 // ---------------------------------------------------------------------------
 // Types & constants
@@ -387,7 +398,10 @@ export class XReserveClient {
       const url = `${config.jsonApiUrl}/v2/state/active-contracts`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ledgerAuthHeader([party]),
+        },
         body: JSON.stringify({
           filter: {
             filtersByParty: {
@@ -462,7 +476,10 @@ export class XReserveClient {
       const url = `${config.jsonApiUrl}/v2/state/active-contracts`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ledgerAuthHeader([cantonParty]),
+        },
         body: JSON.stringify({
           filter: {
             filtersByParty: {
@@ -613,7 +630,10 @@ export class XReserveClient {
       const url = `${config.jsonApiUrl}/v2/state/active-contracts`;
       const res = await fetch(url, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: ledgerAuthHeader([operator]),
+        },
         body: JSON.stringify({
           filter: {
             filtersByParty: {

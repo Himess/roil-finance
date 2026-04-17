@@ -8,7 +8,10 @@ Type=simple
 User=roil
 Group=roil
 WorkingDirectory=/opt/roil-backend
-ExecStartPre=/usr/bin/curl --fail --silent --max-time 3 http://localhost:3001/health || /bin/true
+# Optional pre-start liveness probe — the `-` prefix tells systemd to ignore
+# the exit code (shell || /bin/true does NOT work here; systemd does not
+# invoke a shell and the pipe tokens become argv to curl).
+ExecStartPre=-/usr/bin/curl --fail --silent --max-time 3 http://localhost:3001/health
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=10

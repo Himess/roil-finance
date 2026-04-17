@@ -225,9 +225,14 @@ export async function resolvePackageHash(jsonApiUrl?: string): Promise<string | 
 
   const baseUrl = jsonApiUrl ?? config.jsonApiUrl;
 
+  // Auth token — production participants require a JWT even for /v2/packages.
+  // We lazy-import buildJwt to avoid a config ↔ ledger module-load cycle.
+  const { buildJwt } = await import('./ledger.js');
+  const authHeader = `Bearer ${buildJwt([config.platformParty], [config.platformParty])}`;
+
   try {
     const res = await fetch(`${baseUrl}/v2/packages`, {
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Authorization: authHeader },
     });
 
     if (!res.ok) return null;
@@ -241,7 +246,7 @@ export async function resolvePackageHash(jsonApiUrl?: string): Promise<string | 
     for (const pid of packageIds) {
       try {
         const metaRes = await fetch(`${baseUrl}/v2/packages/${pid}`, {
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', Authorization: authHeader },
         });
         if (!metaRes.ok) continue;
 

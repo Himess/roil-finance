@@ -35,7 +35,16 @@ declare global {
 // Paths that skip authentication
 // ---------------------------------------------------------------------------
 
-const PUBLIC_PATHS = new Set(['/health', '/metrics', '/api/health', '/api/xreserve/info']);
+const PUBLIC_PATHS = new Set([
+  '/health',
+  '/metrics',
+  '/api/health',
+  '/api/xreserve/info',
+  // Auth exchange endpoints do not require a pre-existing JWT.
+  '/api/auth/google/verify',
+  // Instrument discovery (asset→admin map) is safe to expose unauthenticated.
+  '/api/market/instruments',
+]);
 
 // ---------------------------------------------------------------------------
 // Startup validation — call this at server boot to fail fast on misconfig

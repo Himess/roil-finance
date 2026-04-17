@@ -35,7 +35,11 @@ No external DEX dependency. No liquidity pool from users. Platform treasury hand
 
 ## Supported Pairs
 
-All 4 tokens can swap with each other:
+Treasury inventory currently covers the 4 liquid assets above. The wider
+Roil asset universe (9 instruments: CC, USDCx, CBTC, ETHx, SOLx, XAUt,
+XAGt, USTb, MMF) is supported for portfolio targets and DEX-routed swaps
+via Cantex + Temple; treasury pool-backed swaps are limited to the 4 assets
+where the Roil treasury actually holds inventory.
 
 | From → To | CC | USDCx | CBTC | ETHx |
 |-----------|-----|-------|------|------|
@@ -44,7 +48,8 @@ All 4 tokens can swap with each other:
 | **CBTC** | ✅ | ✅ | - | ✅ |
 | **ETHx** | ✅ | ✅ | ✅ | - |
 
-Total: 12 directional pairs
+Total: 12 directional pairs (treasury-pool backed). DEX-routed pairs scale
+with whatever Cantex / Temple have liquidity for.
 
 ---
 
@@ -171,5 +176,18 @@ All parameters can be adjusted at runtime:
 
 ---
 
-*Last updated: 2026-03-26*
+## v0.3.2+ on-chain hardening
+
+The `UpdateBalances` choice on `TreasuryPool` now enforces **optimistic
+concurrency**: callers pass the `expectedLastUpdatedAt` timestamp they
+observed on the pool when they prepared the update. If two backend workers
+race with stale snapshots, exactly one succeeds and the other fails with
+an assertion error — no silent balance regression. The parameter is
+`Optional Time` for upgrade compatibility with v0.3.0 callers; passing
+`None` bypasses the check (deprecated path, retained only for backward
+compatibility).
+
+---
+
+*Last updated: 2026-04-17 (v0.3.3)*
 *Config changes require admin access or env var restart*

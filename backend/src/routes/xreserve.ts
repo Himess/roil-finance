@@ -75,7 +75,7 @@ router.get('/info', (_req: Request, res: Response) => {
 // POST /api/xreserve/onboard — create BridgeUserAgreementRequest
 // ---------------------------------------------------------------------------
 
-router.post('/onboard', requireParty, async (req: Request, res: Response) => {
+router.post('/onboard', requireParty(),async (req: Request, res: Response) => {
   const cantonParty = req.partyId!;
   const operator = getOperator();
 
@@ -152,7 +152,7 @@ router.get('/onboarding/:party', async (req: Request, res: Response) => {
 // POST /api/xreserve/deposits — start a deposit
 // ---------------------------------------------------------------------------
 
-router.post('/deposits', requireParty, (req: Request, res: Response) => {
+router.post('/deposits', requireParty(),(req: Request, res: Response) => {
   const parsed = depositSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: parsed.error.flatten() });
@@ -187,7 +187,7 @@ router.post('/deposits', requireParty, (req: Request, res: Response) => {
 // POST /api/xreserve/deposits/:id/burn — record burn tx
 // ---------------------------------------------------------------------------
 
-router.post('/deposits/:id/burn', requireParty, (req: Request, res: Response) => {
+router.post('/deposits/:id/burn', requireParty(),(req: Request, res: Response) => {
   const parsed = burnSchema.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ success: false, error: parsed.error.flatten() });
@@ -217,7 +217,7 @@ router.post('/deposits/:id/burn', requireParty, (req: Request, res: Response) =>
 
 router.post(
   '/deposits/:id/claim',
-  requireParty,
+  requireParty(),
   async (req: Request, res: Response) => {
     const deposit = xreserveClient.getDeposit(String(req.params.id));
     if (!deposit) {
@@ -310,12 +310,12 @@ router.post(
   },
 );
 
-router.get('/deposits', requireParty, (req: Request, res: Response) => {
+router.get('/deposits', requireParty(),(req: Request, res: Response) => {
   const deposits = xreserveClient.getDepositsByParty(req.partyId!);
   res.json({ success: true, deposits });
 });
 
-router.get('/deposits/:id', requireParty, (req: Request, res: Response) => {
+router.get('/deposits/:id', requireParty(),(req: Request, res: Response) => {
   const deposit = xreserveClient.getDeposit(String(req.params.id));
   if (!deposit) {
     res.status(404).json({ success: false, error: 'Deposit not found' });
@@ -334,7 +334,7 @@ router.get('/deposits/:id', requireParty, (req: Request, res: Response) => {
 
 router.post(
   '/withdrawals',
-  requireParty,
+  requireParty(),
   async (req: Request, res: Response) => {
     const parsed = withdrawSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -422,12 +422,12 @@ router.post(
   },
 );
 
-router.get('/withdrawals', requireParty, (req: Request, res: Response) => {
+router.get('/withdrawals', requireParty(),(req: Request, res: Response) => {
   const withdrawals = xreserveClient.getWithdrawalsByParty(req.partyId!);
   res.json({ success: true, withdrawals });
 });
 
-router.get('/withdrawals/:id', requireParty, (req: Request, res: Response) => {
+router.get('/withdrawals/:id', requireParty(),(req: Request, res: Response) => {
   const withdrawal = xreserveClient.getWithdrawal(String(req.params.id));
   if (!withdrawal) {
     res.status(404).json({ success: false, error: 'Withdrawal not found' });

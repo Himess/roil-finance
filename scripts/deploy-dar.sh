@@ -16,7 +16,19 @@ set -euo pipefail
 URL="${1:-http://localhost:3975}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-DAR_PATH="${2:-$PROJECT_DIR/main/.daml/dist/roil-finance-0.2.0.dar}"
+
+# Pick the highest-versioned DAR from main/.daml/dist by default. Callers can
+# override by passing an explicit path as $2. `ls -v` + `tail -1` means we
+# never ship a stale hardcoded version again.
+DEFAULT_DAR="$(ls -v "$PROJECT_DIR"/main/.daml/dist/roil-finance-*.dar 2>/dev/null | tail -1)"
+DAR_PATH="${2:-$DEFAULT_DAR}"
+
+if [ -z "$DAR_PATH" ]; then
+  echo "ERROR: No DAR found in $PROJECT_DIR/main/.daml/dist/"
+  echo "  Build it first:"
+  echo "    cd main && daml build"
+  exit 1
+fi
 
 echo "=== Roil — DAR Deployment ==="
 echo ""

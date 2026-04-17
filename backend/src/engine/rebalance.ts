@@ -12,6 +12,7 @@ import {
   numberToDecimal,
   decimalAdd,
   decimalMul,
+  decimalSub,
   decimalLt,
 } from '../utils/decimal.js';
 
@@ -53,8 +54,27 @@ const SLIPPAGE_TOLERANCE = Number(process.env.SLIPPAGE_TOLERANCE) || 0.02;
 /** Platform fee rate applied to each swap output (e.g. 0.001 = 0.1%) */
 const PLATFORM_FEE_RATE = parseFloat(process.env.PLATFORM_FEE_RATE || '0.001');
 
-/** Fallback CC price in USDCx when live price is unavailable */
-const CC_FALLBACK_PRICE = parseFloat(process.env.CC_FALLBACK_PRICE || '0.15');
+/**
+ * Fallback CC price in USDCx when live price is unavailable.
+ *
+ * Must be configured via env (`CC_FALLBACK_PRICE`) — no hardcoded default
+ * because a stale constant silently distorts rebalance math. If unset the
+ * engine refuses to compute USD-denominated math and throws so ops is forced
+ * to set a sane value.
+ */
+const CC_FALLBACK_PRICE: number | null = process.env.CC_FALLBACK_PRICE
+  ? parseFloat(process.env.CC_FALLBACK_PRICE)
+  : null;
+
+function requireCcPrice(prices: Record<string, number | undefined>): number {
+  const live = prices.CC;
+  if (typeof live === 'number' && live > 0) return live;
+  if (CC_FALLBACK_PRICE !== null && CC_FALLBACK_PRICE > 0) return CC_FALLBACK_PRICE;
+  throw new Error(
+    'CC price unavailable: live oracle returned no value and CC_FALLBACK_PRICE is unset. ' +
+    'Set CC_FALLBACK_PRICE in backend .env with a recent market price, or restore oracle connectivity.',
+  );
+}
 
 /**
  * Check if actual swap output is within the acceptable slippage tolerance
@@ -286,9 +306,9 @@ export class RebalanceEngine {
     for (const target of targets) {
       const { symbol } = target.asset;
       const holding = holdings.find((h) => h.asset.symbol === symbol);
-      const currentValue = holding ? holding.valueCc * (prices.CC ?? CC_FALLBACK_PRICE) : 0;
+      const currentValue = holding ? holding.valueCc * (requireCcPrice(prices)) : 0;
       // Convert totalValue from CC to USDCx for uniform comparison
-      const totalValueUsd = totalValue * (prices.CC ?? CC_FALLBACK_PRICE);
+      const totalValueUsd = totalValue * (requireCcPrice(prices));
       const targetValue = (target.targetPct / 100) * totalValueUsd;
       const delta = currentValue - targetValue;
 
@@ -373,6 +393,9 @@ export class RebalanceEngine {
    */
   async executeRebalance(portfolioContractId: string): Promise<RebalanceResult> {
     const platform = config.platformParty;
+    // Declared here so the catch block can FailRebalance the EXACT request we
+    // initiated, not a stale one belonging to another in-flight user.
+    let thisRequestCid: string | null = null;
 
     try {
       // 1. Fetch portfolio
@@ -421,6 +444,7 @@ export class RebalanceEngine {
         platform,
       );
       const updatedRequestCid = setLegsResult;
+      thisRequestCid = updatedRequestCid;
 
       // ---------------------------------------------------------------------------
       // Canton Atomic Rebalance (Future Enhancement)
@@ -474,9 +498,14 @@ export class RebalanceEngine {
           { ...swap },
         );
 
-        // Step 5d: Deduct platform fee from swap output
-        const platformFee = swap.outputAmount * PLATFORM_FEE_RATE;
-        const netOutputAmount = swap.outputAmount - platformFee;
+        // Step 5d: Deduct platform fee from swap output.
+        // Use decimal arithmetic (matches DCA engine) to avoid JS float
+        // precision loss on small-amount tokens like CBTC at 10^-4 units.
+        const outputDec = numberToDecimal(swap.outputAmount);
+        const platformFeeDec = decimalMul(outputDec, numberToDecimal(PLATFORM_FEE_RATE));
+        const netOutputDec = decimalSub(outputDec, platformFeeDec);
+        const platformFee = decimalToNumber(platformFeeDec);
+        const netOutputAmount = decimalToNumber(netOutputDec);
         logger.info(
           `[rebalance] Platform fee: ${platformFee.toFixed(6)} ${leg.toAsset.symbol} (${(PLATFORM_FEE_RATE * 100).toFixed(2)}% of ${swap.outputAmount.toFixed(6)})`,
         );
@@ -527,7 +556,7 @@ export class RebalanceEngine {
         const realHoldings = await tokenTransferService.queryHoldings(portfolio.payload.user);
         if (realHoldings.length > 0) {
           const prices = await cantex.getPrices();
-          const ccPrice = prices.CC ?? CC_FALLBACK_PRICE;
+          const ccPrice = requireCcPrice(prices);
           updatedHoldings = realHoldings.map(h => ({
             asset: { symbol: h.instrumentId, admin: h.instrumentAdmin || '' },
             amount: h.amount,
@@ -598,27 +627,21 @@ export class RebalanceEngine {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
 
-      // Try to fail the rebalance request on ledger (best effort)
-      try {
-        const requests = await ledger.query(TEMPLATES.RebalanceRequest, platform);
-        const pending = requests.find(
-          (r) => {
-            const status = (r.payload as Record<string, unknown>).status;
-            const statusTag = typeof status === 'string' ? status : (status as any)?.tag;
-            return statusTag === 'Pending' || statusTag === 'Executing';
-          },
-        );
-        if (pending) {
+      // Fail only the specific request we initiated in this call.
+      // Prior behaviour picked the first Pending|Executing request which could
+      // nuke a concurrent rebalance belonging to another user.
+      if (thisRequestCid) {
+        try {
           await ledger.exerciseAs(
             TEMPLATES.RebalanceRequest,
-            pending.contractId,
+            thisRequestCid,
             'FailRebalance',
             { reason: message },
             platform,
           );
+        } catch {
+          // Ignore — best effort cleanup
         }
-      } catch {
-        // Ignore — best effort cleanup
       }
 
       return { success: false, swapLegs: [], driftBefore: 0, driftAfter: 0, error: message };
@@ -723,7 +746,7 @@ export class RebalanceEngine {
     executedLegs: SwapLeg[],
   ): Promise<Holding[]> {
     const prices = await cantex.getPrices();
-    const ccPrice = prices.CC ?? CC_FALLBACK_PRICE;
+    const ccPrice = requireCcPrice(prices);
 
     // Clone holdings into a mutable map
     const holdingMap = new Map<string, Holding>();

@@ -4,13 +4,30 @@ import { priceOracle } from '../services/price-oracle.js';
 import { scanClient } from '../services/scan-client.js';
 import { smartRouter } from '../services/smart-router.js';
 import { templeClient } from '../services/temple-client.js';
-import { config } from '../config.js';
+import { config, INSTRUMENTS } from '../config.js';
 
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
 export const marketRouter = Router();
+
+/**
+ * GET /api/market/instruments
+ *
+ * Return the per-asset admin party map so the frontend can build correct
+ * AssetId payloads without hardcoding `Canton::Admin` placeholder strings.
+ *
+ * Public — the admin party IDs are already visible on-chain and needed for
+ * every user interaction.
+ */
+marketRouter.get('/instruments', (_req: Request, res: Response) => {
+  const instruments = Object.entries(INSTRUMENTS).map(([symbol, info]) => ({
+    symbol,
+    admin: info.admin,
+  }));
+  res.json({ success: true, data: { instruments, network: config.network } });
+});
 
 /**
  * GET /api/market/prices

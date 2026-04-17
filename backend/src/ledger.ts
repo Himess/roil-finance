@@ -5,6 +5,7 @@ import { withRetry } from './utils/retry.js';
 import { ledgerBreaker } from './utils/circuit-breaker.js';
 import { LedgerError } from './utils/errors.js';
 import { decimalToNumber } from './utils/decimal.js';
+import { logger } from './monitoring/logger.js';
 import {
   globalCommandDedupCache,
   createKey as buildCreateKey,
@@ -72,7 +73,7 @@ export interface ActiveContractsResponse {
 // JWT Builder — supports multiple signing modes
 // ---------------------------------------------------------------------------
 
-function buildJwt(actAs: string[], readAs: string[]): string {
+export function buildJwt(actAs: string[], readAs: string[]): string {
   const header: Record<string, string> = { typ: 'JWT' };
   const now = Math.floor(Date.now() / 1000);
 
@@ -329,7 +330,9 @@ export class DamlLedger {
     actAs: string[],
     opts: { limit?: number } = {},
   ): Promise<DamlContract<T>[]> {
-    const limit = opts.limit ?? 2000;
+    // Default large enough that no realistic per-party template set hits it.
+    // If a caller truly expects an unbounded result, use iterateActiveContracts.
+    const limit = opts.limit ?? 50_000;
     const filters: Record<string, unknown> = {};
     for (const [party, f] of Object.entries(filtersByParty)) {
       filters[party] = {
@@ -374,16 +377,12 @@ export class DamlLedger {
       const templates = Object.values(filtersByParty)
         .flatMap((f) => f.templateIds)
         .join(',');
-      // Lazy import to avoid a cycle with monitoring/logger at module load
-      // eslint-disable-next-line @typescript-eslint/no-var-requires
-      void import('./monitoring/logger.js').then(({ logger }) =>
-        logger.warn('active-contracts snapshot reached limit — possible truncation', {
-          limit,
-          count: rawContracts.length,
-          templates,
-          parties: Object.keys(filtersByParty),
-        }),
-      );
+      logger.warn('active-contracts snapshot reached limit — possible truncation', {
+        limit,
+        count: rawContracts.length,
+        templates,
+        parties: Object.keys(filtersByParty),
+      });
     }
 
     return rawContracts.map((item: ActiveContractsResponse) => {

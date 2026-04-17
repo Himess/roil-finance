@@ -191,21 +191,32 @@ export class DCAEngine {
         return { executed: 0, failed: 0 };
       }
 
-      // Fetch all DCA logs only if cache is cold (first run)
+      // Fetch all DCA logs only if cache is cold (first run after restart).
+      // Use `iterateActiveContracts` so we handle the unbounded case — if
+      // there are more than 50k DCALogs, the single-shot query would truncate
+      // and cold-start could cause a double-buy for the oldest schedules.
       if (lastExecutionCache.size === 0) {
-        const logs = await ledger.query<DCALogPayload>(TEMPLATES.DCALog, platform);
-        for (const log of logs) {
-          const key = scheduleKey(
-            log.payload.user,
-            log.payload.sourceAsset.symbol,
-            log.payload.targetAsset.symbol,
-          );
-          const ts = new Date(log.payload.timestamp).getTime();
-          const existing = lastExecutionCache.get(key) ?? 0;
-          if (ts > existing) {
-            lastExecutionCache.set(key, ts);
+        for await (const batch of ledger.iterateActiveContracts<DCALogPayload>(
+          { [platform]: { templateIds: [TEMPLATES.DCALog] } },
+          [platform],
+        )) {
+          for (const log of batch) {
+            const key = scheduleKey(
+              log.payload.user,
+              log.payload.sourceAsset.symbol,
+              log.payload.targetAsset.symbol,
+            );
+            const ts = new Date(log.payload.timestamp).getTime();
+            const existing = lastExecutionCache.get(key) ?? 0;
+            if (ts > existing) {
+              lastExecutionCache.set(key, ts);
+            }
           }
         }
+        logger.info('[dca] Cold-start cache hydration complete', {
+          component: 'dca',
+          entries: lastExecutionCache.size,
+        });
       }
 
       for (const schedule of activeSchedules) {

@@ -10,6 +10,7 @@ import { rebalanceEngine } from './engine/rebalance.js';
 import { dcaEngine } from './engine/dca.js';
 import { rewardsEngine } from './engine/rewards.js';
 import { compoundEngine } from './engine/compound.js';
+import { isPlatformPaused } from './routes/admin.js';
 import { priceOracle } from './services/price-oracle.js';
 import { xreserveClient } from './services/xreserve-client.js';
 import { validateAdminParties } from './services/admin-party-validator.js';
@@ -17,6 +18,7 @@ import { logger } from './monitoring/logger.js';
 import { metrics, METRICS } from './monitoring/metrics.js';
 import { transactionStream } from './services/transaction-stream.js';
 import { initDb, closeDb } from './db/index.js';
+import { ledgerBreaker, cantexBreaker, type CircuitState } from './utils/circuit-breaker.js';
 // Performance tracker is loaded eagerly so the in-memory store is ready
 // for snapshot recording during auto-rebalance checks.
 import './services/performance-tracker.js';
@@ -66,6 +68,10 @@ const app = createApp();
 
 // DCA execution + auto-rebalance check
 cron.schedule(config.dcaCronSchedule, async () => {
+  if (isPlatformPaused()) {
+    logger.info('Platform paused — skipping DCA + auto-rebalance cron tick', { component: 'cron' });
+    return;
+  }
   logger.info('Running DCA + auto-rebalance check', { component: 'cron' });
 
   try {
@@ -98,6 +104,10 @@ cron.schedule(config.dcaCronSchedule, async () => {
 
 // Monthly reward distribution — runs at 00:05 on the 1st of each month
 cron.schedule('5 0 1 * *', async () => {
+  if (isPlatformPaused()) {
+    logger.info('Platform paused — skipping monthly reward distribution', { component: 'cron' });
+    return;
+  }
   logger.info('Running monthly reward distribution', { component: 'cron' });
 
   try {
@@ -118,6 +128,10 @@ cron.schedule('5 0 1 * *', async () => {
 
 // Auto-compound check — runs every hour
 cron.schedule('0 * * * *', async () => {
+  if (isPlatformPaused()) {
+    logger.info('Platform paused — skipping auto-compound tick', { component: 'cron' });
+    return;
+  }
   logger.info('Running auto-compound check', { component: 'cron' });
 
   try {
@@ -134,11 +148,24 @@ cron.schedule('0 * * * *', async () => {
 // Start server
 // ---------------------------------------------------------------------------
 
+const stateToNumber = (s: CircuitState): number =>
+  s === 'closed' ? 0 : s === 'half-open' ? 1 : 2;
+
+const updateBreakerGauges = () => {
+  metrics.setGauge(METRICS.circuitBreakerState, stateToNumber(ledgerBreaker.getState()), { breaker: 'ledger' });
+  metrics.setGauge(METRICS.circuitBreakerState, stateToNumber(cantexBreaker.getState()), { breaker: 'cantex' });
+};
+
 const server = app.listen(config.port, () => {
   // Startup gauges
   metrics.setGauge(METRICS.activePortfolios, 0);
   metrics.setGauge(METRICS.activeDcaSchedules, 0);
-  metrics.setGauge(METRICS.circuitBreakerState, 0); // 0 = closed (healthy)
+  updateBreakerGauges();
+
+  // Refresh breaker gauges every 10s so alerts see fresh state even without
+  // traffic triggering a transition.
+  const breakerTicker = setInterval(updateBreakerGauges, 10_000);
+  breakerTicker.unref();
 
   // Start price oracle polling (every 30 seconds)
   priceOracle.startPolling(30_000);

@@ -1,0 +1,27 @@
+# Prometheus config for TestNet / MainNet VPS deployment.
+# Backend runs as `roil-backend.service` (systemd); we scrape localhost:3001
+# directly via `network_mode: host`.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - 'alerts.yml'
+
+scrape_configs:
+  - job_name: 'roil-finance-backend-vps'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['localhost:3001']
+        labels:
+          service: 'roil-backend'
+          network: 'canton'
+          context: 'systemd'
+
+  # Scrape the Prometheus itself for meta-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'

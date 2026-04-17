@@ -165,7 +165,7 @@ Roil includes a DEX aggregator that compares prices across multiple Canton Netwo
 
 - **Java 17** (with `JAVA_HOME` set)
 - **Daml SDK 3.4.11**
-- **Node.js 20+**
+- **Node.js 22+** (Node 20 EOL 2026-04-30)
 - **Docker** (recommended for LocalNet)
 
 ### Docker (Recommended)

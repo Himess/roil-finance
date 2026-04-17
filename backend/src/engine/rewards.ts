@@ -309,7 +309,15 @@ export class RewardsEngine {
    * 1. Creates a RewardPayout record
    * 2. Rolls the tracker over to the new month
    */
-  async distributeMonthlyRewards(): Promise<{ distributed: number; failed: number }> {
+  // Guard against double-run at month boundary (e.g. cron fires at 00:00 and
+  // 00:05 due to timezone confusion, or after a restart). We record the last
+  // successfully-distributed month in memory; a restart loses this but the
+  // Daml `DistributeReward` choice archives the previous-month tracker so the
+  // ledger itself refuses a double distribution. This guard just stops the
+  // noisy "failed" path and clarifies operator logs.
+  private lastDistributedMonthId: string | null = null;
+
+  async distributeMonthlyRewards(): Promise<{ distributed: number; failed: number; skipped?: boolean }> {
     const platform = config.platformParty;
 
     // Determine the previous month's ID (we distribute for the month just ended)
@@ -317,6 +325,13 @@ export class RewardsEngine {
     const prevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
     const prevMonthId = `${prevMonth.getFullYear()}-${String(prevMonth.getMonth() + 1).padStart(2, '0')}`;
     const newMonthId = currentMonthId();
+
+    if (this.lastDistributedMonthId === prevMonthId) {
+      logger.info(`Monthly reward distribution already completed for ${prevMonthId}, skipping`, {
+        component: 'rewards',
+      });
+      return { distributed: 0, failed: 0, skipped: true };
+    }
 
     let distributed = 0;
     let failed = 0;
@@ -373,6 +388,13 @@ export class RewardsEngine {
       }
     } catch (err) {
       logger.error('Error distributing rewards', { component: 'rewards', error: err instanceof Error ? err.message : String(err) });
+    }
+
+    // Only mark the month "done" if at least one distribution succeeded and
+    // zero user-level failures occurred; otherwise leave the guard unset so a
+    // subsequent retry re-attempts the failed users.
+    if (distributed > 0 && failed === 0) {
+      this.lastDistributedMonthId = prevMonthId;
     }
 
     return { distributed, failed };

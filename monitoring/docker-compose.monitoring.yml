@@ -1,34 +1,50 @@
-# Monitoring stack for Roil
-# Usage: docker compose -f docker-compose.override.yml -f monitoring/docker-compose.monitoring.yml up -d
-
-version: '3.8'
+# Monitoring stack for Roil — Prometheus + Grafana
+#
+# Two deployment contexts:
+#   (1) LocalNet / cn-quickstart — joins the `cn-quickstart_default` network
+#       and scrapes the `rebalancer-backend` container by its service name.
+#       Start with:
+#         docker compose -f docker-compose.override.yml \
+#           -f monitoring/docker-compose.monitoring.yml up -d
+#
+#   (2) TestNet / MainNet VPS — backend runs as `roil-backend.service`
+#       (systemd), so Prometheus must scrape `host.docker.internal:3001` or
+#       `127.0.0.1:3001` via `network_mode: host`. Use the standalone
+#       `docker-compose.monitoring.vps.yml` variant for that.
+#
+# Ports are bound to 127.0.0.1 by default; tunnel via SSH to reach them:
+#   ssh -L 9090:127.0.0.1:9090 -L 3000:127.0.0.1:3000 root@<host>
 
 services:
   prometheus:
     image: prom/prometheus:v2.51.0
-    container_name: rebalancer-prometheus
+    container_name: roil-prometheus
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus-data:/prometheus
     ports:
-      - "9090:9090"
+      - "127.0.0.1:9090:9090"
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
     restart: unless-stopped
 
   grafana:
     image: grafana/grafana:11.0.0
-    container_name: rebalancer-grafana
+    container_name: roil-grafana
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana-data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=roil-finance
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      # Operator MUST set GRAFANA_ADMIN_PASSWORD in the environment —
+      # otherwise startup fails. No default password ships in this repo.
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in monitoring/.env}
       - GF_USERS_ALLOW_SIGN_UP=false
     depends_on:
       - prometheus

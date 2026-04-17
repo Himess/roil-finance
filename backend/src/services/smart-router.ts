@@ -60,22 +60,26 @@ export class SmartRouter {
       throw new Error('No DEX quotes available');
     }
 
-    // Sort by output amount (highest = best price)
-    quotes.sort((a, b) => b.outputAmount - a.outputAmount);
+    // Sort by NET output (output - fee). Raw output is misleading when one
+    // venue returns more tokens but charges a larger fee.
+    const netOf = (q: RouteQuote) => q.outputAmount - (q.fee ?? 0);
+    quotes.sort((a, b) => netOf(b) - netOf(a));
 
     const best = quotes[0];
     const worst = quotes[quotes.length - 1];
-    best.savings = quotes.length > 1 ? best.outputAmount - worst.outputAmount : 0;
+    best.savings = quotes.length > 1 ? netOf(best) - netOf(worst) : 0;
 
     // Build a human-readable selection reason
     if (quotes.length === 1) {
       best.reason = `${best.source === 'cantex' ? 'Cantex' : 'Temple'} selected: only available DEX`;
     } else {
-      const pctBetter = worst.outputAmount > 0
-        ? ((best.outputAmount - worst.outputAmount) / worst.outputAmount * 100).toFixed(2)
+      const worstNet = netOf(worst);
+      const bestNet = netOf(best);
+      const pctBetter = worstNet > 0
+        ? ((bestNet - worstNet) / worstNet * 100).toFixed(2)
         : '0.00';
       const otherSource = best.source === 'cantex' ? 'Temple' : 'Cantex';
-      best.reason = `${best.source === 'cantex' ? 'Cantex' : 'Temple'} selected: better price by ${pctBetter}% vs ${otherSource}`;
+      best.reason = `${best.source === 'cantex' ? 'Cantex' : 'Temple'} selected: better net output by ${pctBetter}% vs ${otherSource}`;
     }
 
     logger.info('[SmartRouter] Best quote selected', {

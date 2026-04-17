@@ -1,0 +1,51 @@
+# Monitoring stack for TestNet / MainNet VPS (systemd-hosted backend).
+#
+# Uses `network_mode: host` so Prometheus can scrape `localhost:3001`
+# directly. Bound to 127.0.0.1 for external access — tunnel via SSH.
+#
+# Usage on the VPS:
+#   cd <roil-finance-repo>/monitoring
+#   echo "GRAFANA_ADMIN_PASSWORD=$(openssl rand -hex 24)" > .env
+#   chmod 600 .env
+#   docker compose -f docker-compose.monitoring.vps.yml up -d
+#
+# Reach from workstation:
+#   ssh -L 9090:127.0.0.1:9090 -L 3000:127.0.0.1:3000 root@<host>
+#   → http://localhost:9090 (Prometheus), http://localhost:3000 (Grafana)
+
+services:
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: roil-prometheus
+    network_mode: host
+    volumes:
+      - ./prometheus.vps.yml:/etc/prometheus/prometheus.yml:ro
+      - ./alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.listen-address=127.0.0.1:9090'
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: roil-grafana
+    network_mode: host
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in monitoring/.env}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_HTTP_ADDR=127.0.0.1
+      - GF_SERVER_HTTP_PORT=3000
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

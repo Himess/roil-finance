@@ -1,18 +1,18 @@
 sdk-version: 3.4.11
 name: roil-finance
 source: daml
-version: 0.3.2
+version: 0.3.3
 dependencies:
   - daml-prim
   - daml-stdlib
 
-# Canton Network / Splice data-dependencies
-# Full CIP-0056 Token Standard compliance:
-#   Holding + Metadata + TransferInstruction (atomic transfers) + Allocation (DvP)
+# Canton Network / Splice data-dependencies (CIP-0056 Token Standard).
+# Holding + Metadata + TransferInstruction are imported and in active use.
+# Allocation / AllocationRequest DARs are bundled into the installed package
+# set on the validator but not imported here until we ship a concrete
+# `interface instance AllocationRequest.I for Portfolio` in v0.4.
 data-dependencies:
   - dars/splice-api-featured-app-v1-1.0.0.dar
   - dars/splice-api-token-holding-v1-1.0.0.dar
   - dars/splice-api-token-metadata-v1-1.0.0.dar
   - dars/splice-api-token-transfer-instruction-v1-1.0.0.dar
-  - dars/splice-api-token-allocation-v1-1.0.0.dar
-  - dars/splice-api-token-allocation-request-v1-1.0.0.dar

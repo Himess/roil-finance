@@ -11,6 +11,7 @@
 module FeaturedApp where
 
 import DA.List (take)
+import DA.Text qualified as T
 import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateActivityMarker(..), AppRewardBeneficiary(..))
 
 -- | Size of the in-contract dedup window for activityIds.
@@ -19,6 +20,20 @@ import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateA
 -- RecordActivity within this window is rejected before any marker fires.
 recentActivityIdWindow : Int
 recentActivityIdWindow = 1000
+
+-- | Maximum allowed activityWeight per RecordActivity call.
+-- Bounds the inner mapA loop exercising FeaturedAppRight_CreateActivityMarker —
+-- an unbounded weight could exhaust the Canton engine step budget in a single
+-- transaction. 100 is generous (a 100-leg rebalance is already extreme).
+maxActivityWeight : Int
+maxActivityWeight = 100
+
+-- | Maximum activityId length in characters.
+-- Prevents unbounded TextMap-style growth of the dedup list: a single
+-- FeaturedAppConfig capped at 1000 × 128 bytes = 128KB payload, well below
+-- Canton's soft contract size limit.
+maxActivityIdLength : Int
+maxActivityIdLength = 128
 
 -- | Helper: create default beneficiaries list (100% to one party)
 mkDefaultBeneficiaries : Party -> [AppRewardBeneficiary]
@@ -101,7 +116,11 @@ template FeaturedAppConfig
       controller platform
       do
         assertMsg "Activity ID must not be empty" (activityId /= "")
+        assertMsg ("Activity ID must be <= " <> show maxActivityIdLength <> " chars")
+          (T.length activityId <= maxActivityIdLength)
         assertMsg "Activity weight must be >= 1" (activityWeight >= 1)
+        assertMsg ("Activity weight must be <= " <> show maxActivityWeight)
+          (activityWeight <= maxActivityWeight)
         let existing = optional [] identity recentActivityIds
         assertMsg ("Duplicate activityId: " <> activityId)
           (notElem activityId existing)

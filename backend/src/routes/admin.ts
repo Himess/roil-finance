@@ -165,7 +165,24 @@ export function getAllowedAssets(): string[] {
 
 export const adminRouter = Router();
 
-// All admin routes: stricter rate limit + platform party authentication
+/**
+ * GET /api/admin/me
+ *
+ * Lightweight "am I an admin?" probe for the frontend. Must be reachable by
+ * ANY authenticated user (it's how the UI decides whether to render the
+ * /admin link or hard-gate the route). Runs BEFORE `requireAdmin` so
+ * non-admin requests get a clean `{ admin: false }` instead of a 403.
+ *
+ * Returns `{ admin: true }` only if the caller's JWT `actAs` includes the
+ * platform party. This matches the `requireAdmin` check below.
+ */
+adminRouter.get('/me', (req: Request, res: Response) => {
+  const actAsOK = req.actAs?.includes(config.platformParty) ?? false;
+  const partyOK = req.partyId === config.platformParty;
+  res.json({ success: true, admin: actAsOK || partyOK });
+});
+
+// All admin routes AFTER this point: stricter rate limit + platform party auth.
 adminRouter.use(adminRateLimiter);
 adminRouter.use(requireAdmin);
 

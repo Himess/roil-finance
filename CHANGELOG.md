@@ -5,6 +5,46 @@
 ### Planned
 - MainNet validator onboarding (target: 2026-04-20)
 - Featured App application submission (window: 2026-04-20 to 2026-05-04)
+- Dev Fund grant PR submission (post-MainNet)
+- Nightly Postgres `pg_dumpall` backup automation on MainNet
+
+## [0.3.3] - 2026-04-17
+
+Wave-3 hardening pass — 42 items across backend, Daml, frontend (separate
+`Himess/roil-app` repo), ops/docs, and TestNet live state.
+
+### Added
+- **Daml:** `FeaturedApp.RecordActivity` now rejects empty/long `activityId` (≤128 chars) and out-of-range `activityWeight` (1–100) to cap per-call loop size. 5 new `TestFeaturedApp` scripts exercise the dedup + bounds paths (duplicate reject, max weight, long id reject, zero weight reject, max-weight accept). Test count: 152 → **157**.
+- **Backend:** `POST /api/auth/google/verify` server-side Google ID-token verifier (Google JWKS + audience check + email-verified gate). `GET /api/admin/me` lightweight admin-role probe for frontend UI gating. `GET /api/market/instruments` exposes real asset→admin-party map so the frontend can stop hardcoding placeholder admin strings.
+- **Backend:** `buildJwt` exported so `transaction-stream` and `xreserve-client` can mint authenticated ledger requests. All raw `fetch` calls in those services now carry a platform-signed JWT; unauthenticated MainNet participants will no longer silently 401 the SSE stream / xReserve flow.
+- **Ops:** `monitoring/docker-compose.monitoring.vps.yml` + `prometheus.vps.yml` for standalone Prometheus+Grafana on systemd-hosted VPS. Grafana admin password is now required via env (no default in repo). Stack live on TestNet scraping `localhost:3001`.
+- **Docs:** `docs/runbook.md` §8 MainNet cutover procedure (Docker install, Splice bootstrap, DSO fetch, DAR upload via `/v2/packages`, Caddy, hardened systemd). §9 TestNet v0.3.0→v0.3.3 TransferPreapproval archive migration. §10 nginx `client_max_body_size` patch note.
+
+### Changed
+- **Daml:** `main/daml.yaml` drops the unused `splice-api-token-allocation-*-1.0.0.dar` data-dependencies (declared but never imported). Will be re-added in v0.4 with a concrete `AllocationRequest.I for Portfolio` interface instance.
+- **Backend:** `ledger.queryContracts` default limit raised from 2000 → 50,000 and the truncation warning is now a synchronous `logger.warn` (no more lazy dynamic import). DCA cold-start cache hydration now iterates via `iterateActiveContracts` so it handles the unbounded case.
+- **Backend:** `rebalance` engine now uses `decimalMul`/`decimalSub` for platform-fee math (removes JS-float precision loss on small-amount tokens like CBTC). `FailRebalance` in the catch block now targets the EXACT request this call initiated rather than the first `Pending|Executing` request for the platform (prevented nuking concurrent rebalances belonging to other users).
+- **Backend:** Cron callbacks (DCA/rebalance, rewards, compound) now skip when `isPlatformPaused()` — `/api/admin/emergency-freeze` is no longer cosmetic.
+- **Backend:** Monthly `distributeMonthlyRewards` has an in-memory "already-done for month X" guard on top of Daml-level archive — prevents noisy retry failures on cron double-fire.
+- **Backend:** `SmartRouter.getBestQuote` sorts by `outputAmount − fee` (true net) rather than raw output; fee-heavy venues no longer win when a cheaper venue exists.
+- **Backend:** `circuit-breaker.ts` exposes `getState()` to the metrics registry; a 10s ticker in `index.ts` pushes current state to Prometheus. The breaker gauge is no longer stuck at 0.
+- **Backend:** `xreserve` router fixes the `requireParty` factory bug (was invoked without parentheses → every authenticated xReserve route hung until timeout on non-localnet).
+- **Backend:** `/var/log/roil-backend*` tightened to `0640 roil:roil` on live TestNet.
+- **Backend:** `CC_FALLBACK_PRICE` no longer has a hardcoded `0.15` default — the engine throws on missing oracle + missing env var so operators must set a sane value.
+- **Ops:** `scripts/deploy-dar.sh` picks the highest-versioned DAR from `main/.daml/dist/` by default (was hardcoded to the legacy 0.2.0 path). `backend/.env.example` is now a complete MainNet operator template with all 9 admin-party vars, traffic config, and JWT key paths. `.github/workflows/ci.yml` bumped to Node 22 (Node 20 EOL 2026-04-30). Branch protection tightened with `strict: true`, required PR review (1 admin-bypassable), and `Docker Build Validation` in required checks.
+- **Ops:** systemd unit file now reflects the live TestNet layout (User=roil, /opt/roil-backend, full `ProtectSystem=strict` + ExecStartPre `-` prefix). TestNet migrated to this hardened layout on 2026-04-17.
+- **Docs:** `ROADMAP.md` rewritten for v0.3.3 reality (10 modules, 157 tests, Phase 3 = TestNet Live, Phase 4 = MainNet 04-20). `TREASURY.md` updated with v0.3.2+ `UpdateBalances` optimistic concurrency. `docs/devnet-application.md` archived to `docs-internal/` (historical). `docs/featured-app-application.md` version-drift corrected (v0.5.18, DAR v0.3.3, 157 tests).
+
+### Fixed
+- Transaction stream now uses `envelope.transaction.events` from v2 `/v2/updates` (the prior `eventsById` shape was never produced by v2 — engine events had never fired).
+- `middleware/idempotency.ts` guards `res.once('close', …)` with a `typeof` check so test-env Response doubles without event emitters don't throw (blocked CI before).
+
+### Security
+- Google ID tokens are now verified server-side against Google's JWKS before minting a wallet. Client-side decode alone (previous behaviour) was trivially forgeable by any script in the page.
+- Frontend `ProtectedRoute` supports `requireAdmin`; `/admin` route is gated by a backend-authoritative `isAdmin` flag. Backend still enforces on every admin endpoint.
+- Runtime network-mismatch guard in the frontend hard-refuses to render when `backend.health.network !== config.network`. Prevents launch-day foot-gun of a frontend build pointed at the wrong Canton network.
+- `vercel.json` ships full security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy) — prior Vercel deploy had none.
+- `monitoring/docker-compose.monitoring*.yml` require `GRAFANA_ADMIN_PASSWORD` from env; no default password in repo.
 
 ## [0.3.2] - 2026-04-17
 

@@ -16,6 +16,7 @@ import { adminRouter } from './routes/admin.js';
 import { swapRouter } from './routes/swap.js';
 import { whitelistRouter } from './routes/whitelist.js';
 import { xreserveRouter } from './routes/xreserve.js';
+import { authRouter } from './routes/auth.js';
 import { xreserveClient } from './services/xreserve-client.js';
 import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter, auditLogger } from './middleware/security.js';
 // For multi-instance production deployment with Redis:
@@ -100,6 +101,9 @@ export function createApp(): express.Express {
   // Routes
   // -----------------------------------------------------------------------
 
+  // Auth router mounted BEFORE authMiddleware is globally applied so the
+  // login verification endpoints don't require a pre-existing JWT.
+  app.use('/api/auth', authRouter);
   app.use('/api/portfolio', portfolioRouter);
   app.use('/api/dca', dcaRouter);
   app.use('/api/rewards', rewardsRouter);

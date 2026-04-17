@@ -435,3 +435,129 @@ testUpdateRegistrationAuth = script do
   assertMsg "Should be registered" cfg.isRegistered
 
   pure ()
+
+-- ============================================================================
+-- WAVE-2 DEDUP + BOUND TESTS (added with v0.3.3 bounds)
+-- ============================================================================
+
+-- | Test: duplicate activityId on the same config is rejected.
+-- The second RecordActivity call with the same id must fail before any
+-- marker is created.
+testRecordActivity_RejectsDuplicateId : Script ()
+testRecordActivity_RejectsDuplicateId = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "rebalance-dup-001"
+      description = "First call"
+      activityWeight = 1
+      now = t0
+
+  -- Second call with the SAME activityId must fail
+  submitMustFail platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "rebalance-dup-001"
+      description = "Retry — should be blocked"
+      activityWeight = 1
+      now = t0
+
+  -- Exactly one marker should exist
+  markers <- query @FeaturedApp.ActivityMarker platform
+  assertMsg "Only one marker (dedup worked)" (length markers == 1)
+
+-- | Test: activityWeight above maxActivityWeight (100) is rejected.
+testRecordActivity_RejectsWeightTooLarge : Script ()
+testRecordActivity_RejectsWeightTooLarge = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  submitMustFail platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "weight-abuse"
+      description = "weight too large"
+      activityWeight = 101
+      now = t0
+
+-- | Test: activityWeight = 100 (exact cap) is accepted.
+testRecordActivity_AcceptsMaxWeight : Script ()
+testRecordActivity_AcceptsMaxWeight = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  (configCid, _) <- submit platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "max-weight-ok"
+      description = "weight at cap"
+      activityWeight = 100
+      now = t0
+
+  configs <- query @FeaturedApp.FeaturedAppConfig platform
+  let (_, cfg) = head configs
+  assertMsg "totalActivities should be 100" (cfg.totalActivities == 100)
+
+-- | Test: activityId longer than 128 chars is rejected.
+testRecordActivity_RejectsActivityIdTooLong : Script ()
+testRecordActivity_RejectsActivityIdTooLong = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  -- 129-char string (one over the cap)
+  let longId =
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        <> "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        <> "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        <> "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+  submitMustFail platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = longId
+      description = "id too long"
+      activityWeight = 1
+      now = t0
+
+-- | Test: activityWeight = 0 (below minimum) is rejected.
+testRecordActivity_RejectsZeroWeight : Script ()
+testRecordActivity_RejectsZeroWeight = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 12 0 0
+
+  configCid <- submit platform do
+    createCmd (mkDefaultConfig platform)
+
+  submitMustFail platform do
+    exerciseCmd configCid FeaturedApp.RecordActivity with
+      user = alice
+      activityType = FeaturedApp.Rebalance
+      activityId = "zero-weight"
+      description = "zero weight"
+      activityWeight = 0
+      now = t0
