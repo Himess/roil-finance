@@ -268,10 +268,10 @@ Roil has comprehensive test coverage across all layers of the stack:
 
 | Layer | Framework | Test Files | Description |
 |-------|-----------|------------|-------------|
-| **Daml Contracts** | Daml Script | 2 files, 26 test scenarios | Full contract lifecycle, authorization, validation, edge cases |
-| **Backend** | Vitest | 17 test files | Engine logic, routes, auth, security, circuit breaker, retry |
+| **Daml Contracts** | Daml Script | 9 test modules, 146 test scripts | Full contract lifecycle, authorization, validation, edge cases |
+| **Backend** | Vitest | ~10 test files | Engine logic, routes, auth, security, circuit breaker, retry |
 | **Frontend Unit** | Vitest + Testing Library | 3 test files | Config validation, error boundary, hook behavior |
-| **E2E** | Playwright | 1 spec file, 9 test scenarios | Navigation, templates, DCA form, rewards, settings, mobile |
+| **E2E** | Playwright | 1 spec file, 10 test scenarios | Navigation, templates, DCA form, rewards, settings, mobile |
 
 ```bash
 # Run all backend tests
@@ -455,10 +455,10 @@ roil-finance/
 
 | Phase | Status | Milestone |
 |-------|--------|-----------|
-| **Phase 1: Foundation** | Complete | Daml contracts, backend engines, React UI, 240+ tests |
+| **Phase 1: Foundation** | Complete | Daml contracts, backend engines, React UI, 146 Daml tests + backend/FE suites |
 | **Phase 2: DEX Aggregation** | Complete | Smart Order Router, Temple CLOB integration, price oracle |
-| **Phase 3: Devnet** | In Progress | Canton devnet deployment, real DEX connections, GSF Featured App |
-| **Phase 4: Mainnet** | Planned | Production deployment, institutional features, mobile app |
+| **Phase 3: TestNet** | Live | `api.roil.app` backend + DAR v0.3.1 on Canton TestNet, xReserve USDC, governance, Featured App markers |
+| **Phase 4: MainNet** | Provisioning 2026-04-20 | Node cutover, FA + Dev Fund submissions within 2-week window |
 
 See [ROADMAP.md](./ROADMAP.md) for the detailed development plan.
 

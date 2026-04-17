@@ -2,10 +2,50 @@
 
 ## [Unreleased]
 
-### Planned (2026-04 sprint)
-- Additional Daml test modules: TestDCA, TestWhitelist, TestTransferPreapproval
+### Planned
 - MainNet validator onboarding (target: 2026-04-20)
 - Featured App application submission (window: 2026-04-20 to 2026-05-04)
+
+## [0.3.2] - 2026-04-17
+
+Post-audit hardening pass. DAR v0.3.2 built and deployed to TestNet.
+
+### Added
+- **TestTypes** Daml test module — calcMaxDrift edge cases (empty / zero-value holdings), tier boundaries, duplicate-asset detection
+- **CommandDedupCache** — backend-side dedup so application-level retries collapse into the same Canton `commandId`, layered on top of Canton's native 10-minute dedup window
+- **Canton JSON API response validation** — fail-soft Zod schemas on `/state/ledger-end`, `/state/active-contracts`, `/commands/submit-and-wait`, `/packages` catch upstream drift without causing regressions
+- **Prometheus alert rules** — backend down, circuit-open spikes, ledger 5xx rate, DCA lag, idempotency timeout rate
+- **Frontend CI** (in `Himess/roil-app`) — build, test, lint, e2e on every PR
+- **Rollback runbook** — `docs/runbook.md` with deploy, rollback, DAR upload, common incident procedures
+
+### Changed
+- **Daml: `TransferPreapproval`** — provider is now a signatory (was observer). Every preapproval, execution, and log entry is authorized on-chain rather than enforced only by backend code. `PreapprovedTransferLog` also adds provider as observer for reward audit.
+- **Daml: `Treasury.UpdateBalances`** — optimistic concurrency via `expectedLastUpdatedAt`. Two concurrent backend workers with stale snapshots can no longer both succeed.
+- **Daml: `FeaturedApp.FeaturedAppConfig`** — new `recentActivityIds` field (capped at 1,000 most-recent) rejects duplicate `activityId`s inside the choice, defending against backend retries without relying on contract keys (unavailable in Daml-LF 3.x).
+- **Backend: circuit breaker** — atomic state transitions via a generation counter; half-open admits a single probe at a time so concurrent callers cannot corrupt the state machine across `await` boundaries.
+- **Backend: rate limiter** — the in-memory Map is now bounded (`RATE_LIMIT_MAX_KEYS`, default 50,000) with LRU eviction and an iteration cap on the cleanup sweep.
+- **Monitoring: Prometheus config** — removed stale `rebalancer-frontend` nginx target (frontend moved to Vercel); added commented systemd-context scrape target for the VPS deployments.
+- **Docs: README, ARCHITECTURE, SECURITY** — corrected test counts, added TestNet topology section, and converted backend-trusted Daml patterns to an explicit "Known Limitations → Planned on-chain hardening" matrix.
+
+## [0.3.1] - 2026-04-17
+
+Sprint hardening pass — CIP-0056 TransferInstruction factory, 3 new Daml test modules, backend P0 fixes.
+
+### Added
+- **Daml: TestDCA, TestWhitelist, TestTransferPreapproval** — 48 new test scripts across three previously-untested modules. Total: 146 passing.
+- **CIP-0056 TransferInstruction factory** — `splice-api-token-transfer-instruction-v1` imported as Daml data-dependency; `TokenTransfer` exposes `spliceInstructionCid` field + `LinkSpliceInstruction` / `LinkSwapSpliceInstruction` choices.
+- **Backend idempotency per-key lock** — in-flight Promise map collapses concurrent retries into one execution.
+- **Backend ledger pagination** — `queryContracts(limit)` with truncation warning + `iterateActiveContracts` async generator.
+- **Backend admin-party allocation validator** — engine startup distinguishes real / mock / missing parties and logs a summary.
+- **Frontend TestNet transparency** — persistent NetworkBadge, two-state DemoBanner, ProtectedRoute with `requireAuth` for wallet/admin.
+
+### Changed
+- systemd unit runs as unprivileged `roil` user (was `root`) with `NoNewPrivileges`, `ProtectSystem=strict`, `PrivateTmp`.
+- CI DAR artifact path switched from hardcoded `roil-finance-0.2.0.dar` to wildcard + `if-no-files-found: error`.
+- Turkish internal strategy documents relocated to `docs-internal/` and gitignored.
+
+### Fixed
+- `LandingV2.tsx` — replaced `dangerouslySetInnerHTML` with ES2015 codepoint escapes (XSS vector).
 
 ## [0.3.0] - 2026-04-16
 

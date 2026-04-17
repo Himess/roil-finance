@@ -4,9 +4,12 @@ import { logger } from '../monitoring/logger.js';
 const WINDOW_MS = 60_000; // 1 minute
 const MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX || '100', 10);
 const REDIS_URL = process.env.REDIS_URL || '';
+const MAX_MEMORY_KEYS = parseInt(process.env.RATE_LIMIT_MAX_KEYS || '50000', 10);
 
 // ---------------------------------------------------------------------------
 // In-memory store (default fallback)
+// Bounded: Map insertion order gives us LRU — when size exceeds
+// MAX_MEMORY_KEYS we evict the oldest entry (first key in the iterator).
 // ---------------------------------------------------------------------------
 
 interface RateLimitEntry {
@@ -16,10 +19,14 @@ interface RateLimitEntry {
 
 const memoryStore = new Map<string, RateLimitEntry>();
 
-// Cleanup expired entries every 60s
+// Cleanup expired entries every 60s (capped iteration so a huge map
+// cannot stall the event loop).
+const CLEANUP_ITERATION_CAP = 10_000;
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
+  let scanned = 0;
   for (const [key, entry] of memoryStore) {
+    if (scanned++ >= CLEANUP_ITERATION_CAP) break;
     if (entry.resetAt <= now) memoryStore.delete(key);
   }
 }, 60_000);
@@ -31,7 +38,16 @@ function memoryIncrement(key: string): { count: number; resetAt: number } {
 
   if (existing && existing.resetAt > now) {
     existing.count += 1;
+    // Refresh LRU position so active keys do not get evicted.
+    memoryStore.delete(key);
+    memoryStore.set(key, existing);
     return existing;
+  }
+
+  // Evict the oldest entry if we are at capacity.
+  if (memoryStore.size >= MAX_MEMORY_KEYS) {
+    const oldestKey = memoryStore.keys().next().value;
+    if (oldestKey !== undefined) memoryStore.delete(oldestKey);
   }
 
   const entry: RateLimitEntry = { count: 1, resetAt: now + WINDOW_MS };

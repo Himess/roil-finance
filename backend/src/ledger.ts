@@ -5,6 +5,18 @@ import { withRetry } from './utils/retry.js';
 import { ledgerBreaker } from './utils/circuit-breaker.js';
 import { LedgerError } from './utils/errors.js';
 import { decimalToNumber } from './utils/decimal.js';
+import {
+  globalCommandDedupCache,
+  createKey as buildCreateKey,
+  exerciseKey as buildExerciseKey,
+} from './utils/command-dedup.js';
+import {
+  LedgerEndSchema,
+  SubmitResultSchema,
+  ActiveContractsPayloadSchema,
+  PackagesListSchema,
+  validateResponseSoft,
+} from './ledger-schemas.js';
 
 // ---------------------------------------------------------------------------
 // Types — Canton JSON Ledger API v2
@@ -236,8 +248,13 @@ export class DamlLedger {
   ): Promise<SubmitResult> {
     // Generate commandId OUTSIDE the retry loop so retries reuse the same ID.
     // Canton deduplicates commands with the same commandId, preventing duplicates.
-    const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
-    return this.post<SubmitResult>(
+    // An explicit caller-provided commandId takes precedence; otherwise we
+    // derive one from the global dedup cache keyed on the logical operation
+    // so application-level retries collapse into the same Canton command.
+    const finalCommandId =
+      commandId ??
+      globalCommandDedupCache.idFor(buildCreateKey(templateId, actAs, createArguments));
+    const raw = await this.post<unknown>(
       '/v2/commands/submit-and-wait',
       {
         commands: [{
@@ -249,6 +266,8 @@ export class DamlLedger {
       },
       actAs,
     );
+    validateResponseSoft(SubmitResultSchema, raw, '/v2/commands/submit-and-wait#create');
+    return raw as SubmitResult;
   }
 
   /**
@@ -270,8 +289,15 @@ export class DamlLedger {
   ): Promise<SubmitResult> {
     // Generate commandId OUTSIDE the retry loop so retries reuse the same ID.
     // Canton deduplicates commands with the same commandId, preventing duplicates.
-    const finalCommandId = commandId ?? `cmd-${Date.now()}-${crypto.randomUUID()}`;
-    return this.post<SubmitResult>(
+    // An explicit caller-provided commandId takes precedence; otherwise we
+    // derive one from the global dedup cache keyed on the logical operation
+    // so application-level retries collapse into the same Canton command.
+    const finalCommandId =
+      commandId ??
+      globalCommandDedupCache.idFor(
+        buildExerciseKey(templateId, contractId, choice, actAs, choiceArgument),
+      );
+    const raw = await this.post<unknown>(
       '/v2/commands/submit-and-wait',
       {
         commands: [{
@@ -283,6 +309,8 @@ export class DamlLedger {
       },
       actAs,
     );
+    validateResponseSoft(SubmitResultSchema, raw, '/v2/commands/submit-and-wait#exercise');
+    return raw as SubmitResult;
   }
 
   /**
@@ -314,9 +342,11 @@ export class DamlLedger {
     }
 
     // Get current ledger end offset (required by v2 API)
-    const ledgerEnd = await this.get<{ offset: number }>('/v2/state/ledger-end', actAs);
+    const ledgerEndRaw = await this.get<unknown>('/v2/state/ledger-end', actAs);
+    validateResponseSoft(LedgerEndSchema, ledgerEndRaw, '/v2/state/ledger-end');
+    const ledgerEnd = ledgerEndRaw as { offset: number };
 
-    const result = await this.post<{ activeContracts?: ActiveContractsResponse[] } | ActiveContractsResponse[]>(
+    const rawResult = await this.post<unknown>(
       '/v2/state/active-contracts',
       {
         eventFormat: { filtersByParty: filters, verbose: true },
@@ -325,6 +355,14 @@ export class DamlLedger {
       },
       actAs,
     );
+    validateResponseSoft(
+      ActiveContractsPayloadSchema,
+      rawResult,
+      '/v2/state/active-contracts',
+    );
+    const result = rawResult as
+      | { activeContracts?: ActiveContractsResponse[] }
+      | ActiveContractsResponse[];
 
     // v2 API returns array of { contractEntry: { JsActiveContract: { createdEvent: {...} } } }
     const rawContracts: ActiveContractsResponse[] = Array.isArray(result)
@@ -443,8 +481,9 @@ export class DamlLedger {
    * List uploaded packages.
    */
   async listPackages(actAs: string[]): Promise<string[]> {
-    const result = await this.get<{ packageIds: string[] }>('/v2/packages', actAs);
-    return result.packageIds || [];
+    const raw = await this.get<unknown>('/v2/packages', actAs);
+    validateResponseSoft(PackagesListSchema, raw, '/v2/packages');
+    return (raw as { packageIds?: string[] }).packageIds ?? [];
   }
 
   // -----------------------------------------------------------------------

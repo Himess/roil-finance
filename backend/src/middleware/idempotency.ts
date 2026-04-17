@@ -131,12 +131,15 @@ export function idempotencyMiddleware(req: Request, res: Response, next: NextFun
   };
 
   // If the response is closed without json() being called (e.g. res.end or error),
-  // release the lock so waiters don't hang until MAX_WAIT_MS.
-  res.once('close', () => {
-    if (inFlight.get(idempotencyKey) === lockPromise) {
-      releaseLock(null, new Error('response-closed-without-body'));
-    }
-  });
+  // release the lock so waiters don't hang until MAX_WAIT_MS. Guarded so that
+  // Response mocks without event emitters (e.g. unit-test doubles) don't throw.
+  if (typeof (res as { once?: unknown }).once === 'function') {
+    res.once('close', () => {
+      if (inFlight.get(idempotencyKey) === lockPromise) {
+        releaseLock(null, new Error('response-closed-without-body'));
+      }
+    });
+  }
 
   next();
 }

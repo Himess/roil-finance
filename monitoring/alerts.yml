@@ -1,0 +1,111 @@
+groups:
+  - name: roil-backend-health
+    interval: 30s
+    rules:
+      - alert: RoilBackendDown
+        expr: up{job=~"roil-finance-backend.*"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: backend
+        annotations:
+          summary: "Roil backend is unreachable"
+          description: "Prometheus has been unable to scrape the Roil backend for 2 minutes. journalctl -u roil-backend is the next step."
+          runbook: "docs/runbook.md#5-common-incidents"
+
+      - alert: RoilBackendHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+            /
+          sum(rate(http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Roil backend 5xx rate above 5%"
+          description: "More than 5% of requests are returning 5xx over the last 5 minutes. Investigate recent deploys or downstream outages."
+
+      - alert: RoilBackendRequestLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_ms_bucket[5m]))
+          ) > 2000
+        for: 10m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "p95 request latency above 2s"
+          description: "p95 HTTP latency on the backend has been above 2 seconds for 10 minutes. Likely upstream (Cantex / Ledger) slowness."
+
+  - name: roil-backend-infrastructure
+    interval: 30s
+    rules:
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 2
+        for: 2m
+        labels:
+          severity: warning
+          component: backend
+        annotations:
+          summary: "Circuit breaker is OPEN for {{ $labels.name }}"
+          description: "A circuit breaker has been OPEN for more than 2 minutes. Upstream is likely down or degraded."
+          runbook: "docs/runbook.md#5-common-incidents"
+
+      - alert: LedgerApiLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(ledger_api_latency_ms_bucket[5m]))
+          ) > 5000
+        for: 5m
+        labels:
+          severity: warning
+          component: ledger
+        annotations:
+          summary: "Canton Ledger API p95 latency above 5s"
+          description: "Ledger API is slow. Check validator container health (docker compose ps at /root/splice-node/docker-compose/validator)."
+
+      - alert: CantexApiDegraded
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(cantex_api_latency_ms_bucket[5m]))
+          ) > 3000
+        for: 10m
+        labels:
+          severity: warning
+          component: cantex
+        annotations:
+          summary: "Cantex API p95 latency above 3s"
+          description: "Upstream DEX (Cantex) is slow. Expect fallback to Temple via Smart Router."
+
+  - name: roil-business-lag
+    interval: 60s
+    rules:
+      - alert: DcaEngineIdle
+        expr: |
+          (active_dca_schedules > 0)
+            and
+          (rate(dca_executed_total[1h]) == 0)
+        for: 1h
+        labels:
+          severity: warning
+          component: dca
+        annotations:
+          summary: "DCA cron is idle despite active schedules"
+          description: "{{ $value }} active DCA schedules but zero executions in the last hour. Check backend logs for DCA engine errors."
+
+      - alert: RebalanceEngineStalled
+        expr: |
+          (active_portfolios > 0)
+            and
+          (rate(rebalances_executed_total[24h]) == 0)
+            and
+          (rebalance_drift_percent > 15)
+        for: 2h
+        labels:
+          severity: warning
+          component: rebalance
+        annotations:
+          summary: "Rebalance engine has not executed despite significant drift"
+          description: "Portfolios show drift above 15% but no rebalance has run in the last 24 hours."

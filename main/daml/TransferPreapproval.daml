@@ -36,8 +36,11 @@ template TransferPreapproval
     totalTransferCount   : Int        -- number of transfers executed
     createdAt            : Time
   where
-    signatory sender, receiver
-    observer provider
+    -- Provider is a signatory (not just observer) so every preapproval and
+    -- every execute has on-chain authorization from the app provider. This
+    -- means reward attribution is enforced by the ledger rather than by
+    -- backend code alone — the exact fix called out in the v0.3 pre-app audit.
+    signatory sender, receiver, provider
     ensure maxAmountPerTransfer > 0.0
 
     -- Note: Contract keys removed (not supported in Daml-LF 3.x)
@@ -61,6 +64,7 @@ template TransferPreapproval
         logCid <- create PreapprovedTransferLog with
           sender
           receiver
+          provider = Some provider
           instrumentId
           amount
           memo
@@ -146,6 +150,10 @@ template PreapprovedTransferLog
     amount       : Decimal
     memo         : Text
     executedAt   : Time
+    -- provider is Optional and appended at the end so this template is
+    -- upgrade-compatible with v0.3.0. v0.3.2+ creates always populate it;
+    -- pre-upgrade logs remain valid with None.
+    provider     : Optional Party
   where
     signatory sender
-    observer receiver
+    observer receiver :: optional [] (\p -> [p]) provider

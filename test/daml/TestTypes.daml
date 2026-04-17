@@ -1,0 +1,118 @@
+-- ============================================================================
+-- TestTypes — unit tests for pure helpers in Types.daml
+--
+-- Focuses on edge cases that pure helpers must handle correctly before
+-- engines rely on them: empty lists, zero balances, all-zero targets.
+-- ============================================================================
+module TestTypes where
+
+import Daml.Script
+
+import Types qualified
+
+-- ============================================================================
+-- Helpers
+-- ============================================================================
+
+mkAsset : Party -> Text -> Types.AssetId
+mkAsset admin sym = Types.AssetId with symbol = sym; admin = admin
+
+-- ============================================================================
+-- calcMaxDrift — edge cases
+-- ============================================================================
+
+-- | Test 1: empty targets + empty holdings -> drift is 0.
+testCalcMaxDrift_empty : Script ()
+testCalcMaxDrift_empty = script do
+  let drift = Types.calcMaxDrift [] []
+  assertMsg ("expected 0.0 drift with empty inputs, got " <> show drift)
+    (drift == 0.0)
+
+-- | Test 2: non-empty targets, empty holdings -> drift equals max target pct.
+-- When the portfolio is completely empty, every asset is 100% under-allocated
+-- relative to its target, so the maximum drift is the largest target pct.
+testCalcMaxDrift_emptyHoldings : Script ()
+testCalcMaxDrift_emptyHoldings = script do
+  issuer <- allocateParty "Issuer"
+  let cc   = mkAsset issuer "CC"
+      usdc = mkAsset issuer "USDCx"
+  let targets =
+        [ Types.TargetAllocation with asset = cc;   targetPct = 60.0
+        , Types.TargetAllocation with asset = usdc; targetPct = 40.0
+        ]
+  let drift = Types.calcMaxDrift targets []
+  assertMsg ("expected drift 60.0 with empty holdings, got " <> show drift)
+    (drift == 60.0)
+
+-- | Test 3: non-empty targets, holdings at target -> drift is 0.
+testCalcMaxDrift_onTarget : Script ()
+testCalcMaxDrift_onTarget = script do
+  issuer <- allocateParty "Issuer"
+  let cc   = mkAsset issuer "CC"
+      usdc = mkAsset issuer "USDCx"
+  let targets =
+        [ Types.TargetAllocation with asset = cc;   targetPct = 60.0
+        , Types.TargetAllocation with asset = usdc; targetPct = 40.0
+        ]
+  let holdings =
+        [ Types.Holding with asset = cc;   amount = 60.0; valueCc = 60.0
+        , Types.Holding with asset = usdc; amount = 40.0; valueCc = 40.0
+        ]
+  let drift = Types.calcMaxDrift targets holdings
+  assertMsg ("expected drift 0.0 on-target, got " <> show drift)
+    (drift == 0.0)
+
+-- | Test 4: zero-total holdings (all holdings have valueCc = 0) -> drift =
+-- max target pct, same semantics as empty holdings.
+testCalcMaxDrift_zeroValueHoldings : Script ()
+testCalcMaxDrift_zeroValueHoldings = script do
+  issuer <- allocateParty "Issuer"
+  let cc   = mkAsset issuer "CC"
+      usdc = mkAsset issuer "USDCx"
+  let targets =
+        [ Types.TargetAllocation with asset = cc;   targetPct = 70.0
+        , Types.TargetAllocation with asset = usdc; targetPct = 30.0
+        ]
+  let holdings =
+        [ Types.Holding with asset = cc;   amount = 0.0; valueCc = 0.0
+        , Types.Holding with asset = usdc; amount = 0.0; valueCc = 0.0
+        ]
+  let drift = Types.calcMaxDrift targets holdings
+  assertMsg ("expected drift 70.0 for zero-value holdings, got " <> show drift)
+    (drift == 70.0)
+
+-- ============================================================================
+-- getTier — boundary cases
+-- ============================================================================
+
+-- | Test 5: tier boundaries across Bronze/Silver/Gold/Platinum.
+testGetTier_boundaries : Script ()
+testGetTier_boundaries = script do
+  assertMsg "0 -> Bronze"     (Types.getTier 0    == Types.Bronze)
+  assertMsg "50 -> Bronze"    (Types.getTier 50   == Types.Bronze)
+  assertMsg "51 -> Silver"    (Types.getTier 51   == Types.Silver)
+  assertMsg "200 -> Silver"   (Types.getTier 200  == Types.Silver)
+  assertMsg "201 -> Gold"     (Types.getTier 201  == Types.Gold)
+  assertMsg "500 -> Gold"     (Types.getTier 500  == Types.Gold)
+  assertMsg "501 -> Platinum" (Types.getTier 501  == Types.Platinum)
+
+-- ============================================================================
+-- hasDuplicateAssets
+-- ============================================================================
+
+testHasDuplicateAssets : Script ()
+testHasDuplicateAssets = script do
+  issuer <- allocateParty "Issuer"
+  let cc   = mkAsset issuer "CC"
+      usdc = mkAsset issuer "USDCx"
+  assertMsg "empty list" (not (Types.hasDuplicateAssets []))
+  let unique =
+        [ Types.TargetAllocation with asset = cc;   targetPct = 50.0
+        , Types.TargetAllocation with asset = usdc; targetPct = 50.0
+        ]
+  assertMsg "unique assets" (not (Types.hasDuplicateAssets unique))
+  let dup =
+        [ Types.TargetAllocation with asset = cc; targetPct = 50.0
+        , Types.TargetAllocation with asset = cc; targetPct = 50.0
+        ]
+  assertMsg "duplicate assets" (Types.hasDuplicateAssets dup)

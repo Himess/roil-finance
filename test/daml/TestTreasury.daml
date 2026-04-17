@@ -221,22 +221,38 @@ testUpdateBalances = script do
   poolCid <- submit platform do
     createCmd (mkDefaultPool platform tokenAdmin t0)
 
-  -- Update balances to include CBTC
+  -- Update balances to include CBTC — expectedLastUpdatedAt matches t0
   poolCid <- submit platform do
     exerciseCmd poolCid UpdateBalances with
       newBalances = [(cc, 90000.0), (usdcx, 55000.0), (cbtc, 2.5)]
       updatedAt = t1
+      expectedLastUpdatedAt = Some t0
 
   pools <- query @TreasuryPool platform
   let (_, pool) = head pools
   assertMsg "Should have 3 balance entries" (length pool.balances == 3)
   assertMsg "Last updated should be t1" (pool.lastUpdatedAt == t1)
 
-  -- Empty balances should fail
+  -- Empty balances should fail (stays with optimistic-concurrency match)
   submitMustFail platform do
     exerciseCmd poolCid UpdateBalances with
       newBalances = []
-      updatedAt = t1
+      updatedAt = (time (date 2026 Mar 15) 10 6 0)
+      expectedLastUpdatedAt = Some t1
+
+  -- Stale optimistic-concurrency snapshot must fail
+  submitMustFail platform do
+    exerciseCmd poolCid UpdateBalances with
+      newBalances = [(cc, 1.0), (usdcx, 1.0)]
+      updatedAt = (time (date 2026 Mar 15) 10 7 0)
+      expectedLastUpdatedAt = Some t0  -- stale: actual lastUpdatedAt is t1
+
+  -- None (legacy callers) also succeeds — backward-compatible path
+  _ <- submit platform do
+    exerciseCmd poolCid UpdateBalances with
+      newBalances = [(cc, 80000.0), (usdcx, 60000.0), (cbtc, 3.0)]
+      updatedAt = (time (date 2026 Mar 15) 10 10 0)
+      expectedLastUpdatedAt = None
 
   pure ()
 

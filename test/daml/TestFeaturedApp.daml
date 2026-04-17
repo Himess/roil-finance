@@ -21,6 +21,7 @@ mkDefaultConfig platform = FeaturedApp.FeaturedAppConfig with
   beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
   totalActivities = 0
   lastActivityAt = None
+  recentActivityIds = Some []
 
 -- ============================================================================
 -- RECORD ACTIVITY TESTS
@@ -380,6 +381,7 @@ testRewardDistributionActivity = script do
       beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
       totalActivities = 0
       lastActivityAt = None
+      recentActivityIds = Some []
 
   -- Record a RewardDistribution activity
   (configCid, markerCid) <- submit platform do

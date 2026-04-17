@@ -85,14 +85,29 @@ template TreasuryPool
 
     -- | Update balances after backend processes a swap on-chain.
     -- The backend reconciles actual token balances and syncs them here.
+    --
+    -- Optimistic concurrency: callers SHOULD pass the `expectedLastUpdatedAt`
+    -- they observed on the current pool. If two backend workers race this
+    -- choice with stale snapshots, exactly one succeeds and the other fails
+    -- with an assertion error, preventing silent balance regression. The
+    -- parameter is Optional so the template is upgrade-compatible with
+    -- v0.3.0 callers; None skips the concurrency check (deprecated).
     choice UpdateBalances : ContractId TreasuryPool
       with
-        newBalances : [(AssetId, Decimal)]
-        updatedAt   : Time
+        newBalances            : [(AssetId, Decimal)]
+        updatedAt              : Time
+        -- Optional + appended at end for v0.3.0 upgrade compatibility.
+        expectedLastUpdatedAt  : Optional Time
       controller platform
       do
+        case expectedLastUpdatedAt of
+          Some ts -> assertMsg
+            "Stale update — expectedLastUpdatedAt does not match current lastUpdatedAt"
+            (ts == lastUpdatedAt)
+          None -> pure ()
         assertMsg "Balances must not be empty" (not (null newBalances))
         assertMsg "All balances must be non-negative" (all (\(_, amt) -> amt >= 0.0) newBalances)
+        assertMsg "updatedAt must advance past lastUpdatedAt" (updatedAt > lastUpdatedAt)
         create this with balances = newBalances; lastUpdatedAt = updatedAt
 
     -- | Update the spread rate.

@@ -10,7 +10,15 @@
 -- Activity is recorded locally via ActivityMarker contracts.
 module FeaturedApp where
 
+import DA.List (take)
 import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateActivityMarker(..), AppRewardBeneficiary(..))
+
+-- | Size of the in-contract dedup window for activityIds.
+-- Daml-LF 3.x removed contract keys, so we simulate uniqueness by keeping
+-- the N most recent activityIds on the FeaturedAppConfig itself. A retry of
+-- RecordActivity within this window is rejected before any marker fires.
+recentActivityIdWindow : Int
+recentActivityIdWindow = 1000
 
 -- | Helper: create default beneficiaries list (100% to one party)
 mkDefaultBeneficiaries : Party -> [AppRewardBeneficiary]
@@ -69,6 +77,9 @@ template FeaturedAppConfig
     beneficiaries       : [AppRewardBeneficiary]            -- configurable reward split
     totalActivities     : Int
     lastActivityAt      : Optional Time
+    -- Optional + appended at end for v0.3.0 upgrade compatibility. None on
+    -- pre-upgrade contracts means "no dedup history yet"; treat as empty list.
+    recentActivityIds   : Optional [Text]                   -- most-recent-first, bounded dedup window
   where
     signatory platform
     ensure not (null beneficiaries)
@@ -77,6 +88,8 @@ template FeaturedAppConfig
     -- Record an activity with optional weight multiplier.
     -- activityWeight >= 1: creates that many markers (multi-leg = higher reward).
     -- When FeaturedAppRight is held, exercises Splice interface per marker.
+    -- Dedup: activityId must not appear in recentActivityIds; retries of the
+    -- same logical activity are rejected before any marker is created.
     choice RecordActivity : (ContractId FeaturedAppConfig, ContractId ActivityMarker)
       with
         user           : Party
@@ -89,9 +102,15 @@ template FeaturedAppConfig
       do
         assertMsg "Activity ID must not be empty" (activityId /= "")
         assertMsg "Activity weight must be >= 1" (activityWeight >= 1)
+        let existing = optional [] identity recentActivityIds
+        assertMsg ("Duplicate activityId: " <> activityId)
+          (notElem activityId existing)
+
+        let updatedRecent = take recentActivityIdWindow (activityId :: existing)
         configCid <- create this with
           totalActivities = totalActivities + activityWeight
           lastActivityAt = Some now
+          recentActivityIds = Some updatedRecent
 
         -- Audit trail (always created)
         _ <- create ActivityRecord with

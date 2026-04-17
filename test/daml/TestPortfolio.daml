@@ -333,6 +333,7 @@ testFeaturedApp = script do
       beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
       totalActivities = 0
       lastActivityAt = None
+      recentActivityIds = Some []
 
   -- Record a rebalance activity
   (configCid, activityCid1) <- submit platform do
@@ -1037,6 +1038,7 @@ testFeaturedAppConvenienceWrappers = script do
       beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
       totalActivities = 0
       lastActivityAt = None
+      recentActivityIds = Some []
 
   -- 1. Record a Rebalance activity (same as RecordRebalanceActivity would do)
   (configCid, markerCid1) <- submit platform do
@@ -1102,6 +1104,7 @@ testActivityMarkerCreation = script do
       beneficiaries = FeaturedApp.mkDefaultBeneficiaries platform
       totalActivities = 0
       lastActivityAt = None
+      recentActivityIds = Some []
 
   -- Record an activity
   (configCid, markerCid) <- submit platform do

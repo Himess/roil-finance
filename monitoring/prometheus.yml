@@ -1,20 +1,39 @@
 # Prometheus configuration for Roil
+#
+# Two deployment contexts:
+#   (1) Docker Compose (local dev / cn-quickstart):
+#       backend is reachable as service `rebalancer-backend` on port 3001.
+#   (2) Systemd / TestNet + MainNet:
+#       backend runs as `roil-backend.service` on localhost:3001.
+#       Point a sidecar Prometheus at the `localhost` target below.
+#
+# The frontend moved to Vercel (Himess/roil-app) so the former
+# rebalancer-frontend nginx target was removed.
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+rule_files:
+  - 'alerts.yml'
+
 scrape_configs:
-  - job_name: 'roil-finance-backend'
+  # --- Context (1): Docker Compose network ---
+  - job_name: 'roil-finance-backend-compose'
     metrics_path: '/metrics'
     static_configs:
       - targets: ['rebalancer-backend:3001']
         labels:
-          service: 'rebalancer-backend'
+          service: 'roil-backend'
           network: 'canton'
+          context: 'compose'
 
-  - job_name: 'roil-finance-nginx'
-    metrics_path: '/stub_status'
-    static_configs:
-      - targets: ['rebalancer-frontend:8080']
-        labels:
-          service: 'rebalancer-frontend'
+  # --- Context (2): Systemd / VPS (uncomment the target that matches) ---
+  # - job_name: 'roil-finance-backend-vps'
+  #   metrics_path: '/metrics'
+  #   static_configs:
+  #     - targets: ['localhost:3001']
+  #       labels:
+  #         service: 'roil-backend'
+  #         network: 'canton'
+  #         context: 'systemd'

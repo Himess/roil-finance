@@ -1,5 +1,11 @@
 // ---------------------------------------------------------------------------
 // Circuit Breaker pattern for external service calls
+//
+// State evaluation is a single synchronous block to avoid read-modify-write
+// races across `await` boundaries. Half-open admits one probe at a time;
+// concurrent callers are treated as "open". A monotonic `generation` counter
+// ensures that stale completions (probes whose state has already advanced
+// past them) cannot corrupt the current state.
 // ---------------------------------------------------------------------------
 
 import { logger } from '../monitoring/logger.js';
@@ -29,11 +35,19 @@ export interface CircuitBreakerStats {
   successes: number;
 }
 
+type AdmitDecision =
+  | { action: 'pass'; generation: number }
+  | { action: 'probe'; generation: number }
+  | { action: 'reject' };
+
 export class CircuitBreaker {
   private state: CircuitState = 'closed';
   private failureCount = 0;
   private successCount = 0;
   private lastFailureTime = 0;
+  private probeInFlight = false;
+  /** Monotonic counter that increments on every state transition. */
+  private generation = 0;
   private readonly options: CircuitBreakerOptions;
 
   constructor(options: Partial<CircuitBreakerOptions> & { name: string }) {
@@ -47,31 +61,26 @@ export class CircuitBreaker {
    *   Once failureThreshold is reached, the circuit transitions to **open**.
    * - **open**: Calls are rejected immediately with an error.
    *   After resetTimeoutMs, the circuit transitions to **half-open**.
-   * - **half-open**: Calls pass through. Successes increment a counter; once
-   *   successThreshold is reached the circuit **closes**. A single failure
-   *   re-opens the circuit.
+   * - **half-open**: A single probe call passes through. Successes increment a
+   *   counter; once successThreshold is reached the circuit **closes**. A
+   *   single failure re-opens the circuit. Concurrent callers during a probe
+   *   are rejected as "open".
    */
   async execute<T>(fn: () => Promise<T>): Promise<T> {
-    if (this.state === 'open') {
-      if (Date.now() - this.lastFailureTime >= this.options.resetTimeoutMs) {
-        logger.info(
-          `[circuit-breaker] [${this.options.name}] Transitioning from OPEN to HALF-OPEN`,
-        );
-        this.state = 'half-open';
-        this.successCount = 0;
-      } else {
-        throw new Error(
-          `Circuit breaker [${this.options.name}] is OPEN — rejecting call`,
-        );
-      }
+    const decision = this.admit();
+
+    if (decision.action === 'reject') {
+      throw new Error(
+        `Circuit breaker [${this.options.name}] is OPEN — rejecting call`,
+      );
     }
 
     try {
       const result = await fn();
-      this.onSuccess();
+      this.onSuccess(decision);
       return result;
     } catch (err) {
-      this.onFailure();
+      this.onFailure(decision);
       throw err;
     }
   }
@@ -96,17 +105,56 @@ export class CircuitBreaker {
     this.failureCount = 0;
     this.successCount = 0;
     this.lastFailureTime = 0;
+    this.probeInFlight = false;
+    this.generation++;
     logger.info(`[circuit-breaker] [${this.options.name}] Manually reset to CLOSED`);
   }
 
   // -------------------------------------------------------------------------
-  // Internal state transitions
+  // Internal state transitions — all synchronous, no awaits
   // -------------------------------------------------------------------------
 
-  private onSuccess(): void {
-    if (this.state === 'half-open') {
+  /** Atomically evaluate state and decide whether to admit the call. */
+  private admit(): AdmitDecision {
+    if (this.state === 'closed') {
+      return { action: 'pass', generation: this.generation };
+    }
+
+    if (this.state === 'open') {
+      if (Date.now() - this.lastFailureTime < this.options.resetTimeoutMs) {
+        return { action: 'reject' };
+      }
+      // Cooldown elapsed — move to half-open and admit this call as the probe.
+      this.generation++;
+      this.state = 'half-open';
+      this.successCount = 0;
+      this.probeInFlight = true;
+      logger.info(
+        `[circuit-breaker] [${this.options.name}] OPEN -> HALF-OPEN (probe gen ${this.generation})`,
+      );
+      return { action: 'probe', generation: this.generation };
+    }
+
+    // state === 'half-open'
+    if (this.probeInFlight) {
+      // Another probe is already running — treat as open for concurrent callers.
+      return { action: 'reject' };
+    }
+    this.probeInFlight = true;
+    return { action: 'probe', generation: this.generation };
+  }
+
+  private onSuccess(decision: AdmitDecision): void {
+    if (decision.action === 'reject') return;
+
+    // Ignore completions from a prior generation (stale probe).
+    if (decision.generation !== this.generation) return;
+
+    if (decision.action === 'probe') {
+      this.probeInFlight = false;
       this.successCount++;
       if (this.successCount >= this.options.successThreshold) {
+        this.generation++;
         logger.info(
           `[circuit-breaker] [${this.options.name}] HALF-OPEN -> CLOSED (${this.successCount} consecutive successes)`,
         );
@@ -114,32 +162,43 @@ export class CircuitBreaker {
         this.failureCount = 0;
         this.successCount = 0;
       }
-    } else if (this.state === 'closed') {
-      // Reset failure counter on any success
-      this.failureCount = 0;
+      return;
     }
+
+    // closed path
+    this.failureCount = 0;
   }
 
-  private onFailure(): void {
+  private onFailure(decision: AdmitDecision): void {
+    if (decision.action === 'reject') return;
+
+    // Ignore completions from a prior generation (stale probe).
+    if (decision.generation !== this.generation) return;
+
     this.lastFailureTime = Date.now();
 
-    if (this.state === 'half-open') {
-      // Any failure in half-open immediately re-opens the circuit
+    if (decision.action === 'probe') {
+      // Any failure during the probe immediately re-opens the circuit.
+      this.generation++;
+      this.probeInFlight = false;
       logger.warn(
         `[circuit-breaker] [${this.options.name}] HALF-OPEN -> OPEN (failure during probe)`,
       );
       this.state = 'open';
-      this.failureCount = this.options.failureThreshold; // keep at threshold
+      this.failureCount = this.options.failureThreshold;
       this.successCount = 0;
-    } else if (this.state === 'closed') {
-      this.failureCount++;
-      if (this.failureCount >= this.options.failureThreshold) {
-        logger.warn(
-          `[circuit-breaker] [${this.options.name}] CLOSED -> OPEN (${this.failureCount} consecutive failures)`,
-        );
-        this.state = 'open';
-        this.successCount = 0;
-      }
+      return;
+    }
+
+    // closed path
+    this.failureCount++;
+    if (this.failureCount >= this.options.failureThreshold) {
+      this.generation++;
+      logger.warn(
+        `[circuit-breaker] [${this.options.name}] CLOSED -> OPEN (${this.failureCount} consecutive failures)`,
+      );
+      this.state = 'open';
+      this.successCount = 0;
     }
   }
 }

@@ -128,6 +128,8 @@ export class FeaturedAppEngine {
             featuredAppRightCid: null,
             beneficiaries,
             totalActivities: 0,
+            lastActivityAt: null,
+            recentActivityIds: null,
           },
           [platform],
         );

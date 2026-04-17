@@ -23,7 +23,7 @@ setup = do
 
 makePreapproval : Party -> Party -> Party -> Time -> Time -> Decimal -> Script (ContractId TransferPreapproval)
 makePreapproval alice bob roil t0 tExp maxAmount =
-  submit (actAs alice <> actAs bob) do
+  submitMulti [alice, bob, roil] [] do
     createCmd TransferPreapproval with
       sender = alice
       receiver = bob
@@ -56,7 +56,7 @@ testCreatePreapproval = script do
 testCreatePreapproval_RejectsZero : Script ()
 testCreatePreapproval_RejectsZero = script do
   (alice, bob, roil, t0, tExp) <- setup
-  submitMustFail alice do
+  submitMultiMustFail [alice, bob, roil] [] do
     createCmd TransferPreapproval with
       sender = alice; receiver = bob; provider = roil
       instrumentId = "USDCx"
