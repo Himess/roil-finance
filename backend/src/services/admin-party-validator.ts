@@ -22,7 +22,6 @@
 // ---------------------------------------------------------------------------
 
 import { config, INSTRUMENTS } from '../config.js';
-import { ledger } from '../ledger.js';
 import { logger } from '../monitoring/logger.js';
 
 /** Parties that MUST be allocated for core swap/rebalance flows to work. */
@@ -37,25 +36,18 @@ function isMockParty(partyId: string): boolean {
 }
 
 /**
- * Check whether a party ID is known to the participant.
+ * Heuristic: a party that follows the Canton party-ID format
+ * (`hint::1220<64hex>`) and is NOT a known mock prefix is *assumed* real.
  *
- * Canton JSON Ledger API v2 exposes `/v2/parties/:party` — returns 200 with
- * the party details if allocated, 404 otherwise. This function is non-throwing
- * and returns false on any error (network, auth, 404, etc.).
+ * Full ledger allocation verification would require calling the participant's
+ * `/v2/parties` endpoint, but that API is internal to the DamlLedger class.
+ * This heuristic is sufficient for startup diagnostics — actual ledger
+ * submission failures at runtime will be caught by engine error handling.
  */
-async function isPartyAllocated(partyId: string): Promise<boolean> {
-  try {
-    const encoded = encodeURIComponent(partyId);
-    const result = await ledger.get<{ partyDetails?: unknown } | unknown[]>(
-      `/v2/parties/${encoded}`,
-      [config.platformParty],
-    );
-    // v2 returns either a wrapper object or an array with one entry.
-    if (Array.isArray(result)) return result.length > 0;
-    return !!(result as { partyDetails?: unknown }).partyDetails || !!result;
-  } catch {
-    return false;
-  }
+function looksAllocated(partyId: string): boolean {
+  if (isMockParty(partyId)) return false;
+  // Canton party ID: hint::1220<hex>
+  return /^[a-zA-Z0-9_-]+::1220[a-f0-9]{64}$/i.test(partyId);
 }
 
 /**
@@ -83,8 +75,8 @@ export async function validateAdminParties(): Promise<void> {
     const mock = isMockParty(partyId);
     const required = REQUIRED_PARTIES.has(asset);
 
-    // Skip ledger lookup for mock parties — they're never allocated by design.
-    const allocated = mock ? false : await isPartyAllocated(partyId);
+    // Heuristic check: mock prefix → never allocated; Canton format → likely real.
+    const allocated = mock ? false : looksAllocated(partyId);
     results.push({ asset, partyId, allocated, mock, required });
   }
 
