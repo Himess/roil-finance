@@ -29,6 +29,23 @@ services:
       - '--web.listen-address=127.0.0.1:9090'
     restart: unless-stopped
 
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: roil-alertmanager
+    network_mode: host
+    volumes:
+      - ./alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    environment:
+      # Empty → Slack receiver no-ops; alerts still fire and are queryable
+      # via http://localhost:9093/api/v2/alerts but nothing is sent out.
+      - ALERTMANAGER_SLACK_WEBHOOK_URL=${ALERTMANAGER_SLACK_WEBHOOK_URL:-}
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.listen-address=127.0.0.1:9093'
+    restart: unless-stopped
+
   grafana:
     image: grafana/grafana:11.0.0
     container_name: roil-grafana
@@ -49,3 +66,4 @@ services:
 volumes:
   prometheus-data:
   grafana-data:
+  alertmanager-data:

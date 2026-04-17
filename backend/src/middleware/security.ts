@@ -6,7 +6,10 @@ import { logger } from '../monitoring/logger.js';
 // ---------------------------------------------------------------------------
 
 const requestCounts = new Map<string, { count: number; resetAt: number }>();
-const RATE_LIMIT = 100; // requests per window
+// Configurable via RATE_LIMIT_MAX env (per-IP requests per minute). Default
+// 100/min preserves prior behaviour; raise for load tests or higher-traffic
+// environments. Shared default with middleware/rate-limiter.ts (Redis-backed).
+const RATE_LIMIT = parseInt(process.env.RATE_LIMIT_MAX || '100', 10);
 const RATE_WINDOW = 60_000; // 1 minute
 
 export function rateLimiter(req: Request, res: Response, next: NextFunction): void {

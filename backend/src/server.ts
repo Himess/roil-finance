@@ -23,6 +23,7 @@ import { rateLimiter, sanitizeInput, securityHeaders, requestSizeLimiter, auditL
 // import { rateLimiter } from './middleware/rate-limiter.js';
 import { authMiddleware } from './middleware/auth.js';
 import { idempotencyMiddleware } from './middleware/idempotency.js';
+import { normalizeInstruments } from './middleware/normalize-instruments.js';
 import { metricsMiddleware } from './middleware/metrics-middleware.js';
 import { logger } from './monitoring/logger.js';
 import { globalErrorHandler } from './middleware/error-handler.js';
@@ -68,6 +69,10 @@ export function createApp(): express.Express {
   }));
   app.use(express.json());
   app.use(sanitizeInput);
+  // Normalize Canton::Admin sentinel → real admin party from config.
+  // Runs before authMiddleware so unauthenticated public routes (market,
+  // xreserve/info) also benefit.
+  app.use(normalizeInstruments);
   app.use(authMiddleware);
 
   // Idempotency support — cache POST/PUT responses by Idempotency-Key header

@@ -1,0 +1,32 @@
+# Alertmanager config for Roil.
+#
+# DEFAULT MODE (no Slack): all alerts accepted and visible at
+#   http://localhost:9093/api/v2/alerts but not externally delivered.
+#
+# TO ENABLE SLACK:
+#   1. Create an Incoming Webhook in Slack:
+#        https://api.slack.com/messaging/webhooks
+#   2. On the VPS, replace this file with `alertmanager.slack.yml` and
+#      substitute the webhook URL, then reload:
+#        sed "s|__SLACK_WEBHOOK_URL__|$ALERTMANAGER_SLACK_WEBHOOK_URL|" \
+#          alertmanager.slack.yml > alertmanager.yml
+#        docker restart roil-alertmanager
+#
+# We ship the null-receiver version as default because Alertmanager rejects
+# an empty slack_api_url at startup ("unsupported scheme"), and we want the
+# monitoring stack to come up cleanly even before the webhook is wired.
+
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'null'
+  group_by: ['alertname', 'component']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 12h
+
+receivers:
+  - name: 'null'
+    # Intentionally empty — alerts are stored and queryable locally
+    # but not delivered until Slack is configured.
