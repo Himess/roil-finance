@@ -37,7 +37,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: roil-finance-dar
-          path: main/.daml/dist/roil-finance-0.2.0.dar
+          path: main/.daml/dist/roil-finance-*.dar
+          if-no-files-found: error
 
   backend:
     name: Backend Build & Test

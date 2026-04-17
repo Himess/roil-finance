@@ -12,6 +12,7 @@ import { rewardsEngine } from './engine/rewards.js';
 import { compoundEngine } from './engine/compound.js';
 import { priceOracle } from './services/price-oracle.js';
 import { xreserveClient } from './services/xreserve-client.js';
+import { validateAdminParties } from './services/admin-party-validator.js';
 import { logger } from './monitoring/logger.js';
 import { metrics, METRICS } from './monitoring/metrics.js';
 import { transactionStream } from './services/transaction-stream.js';
@@ -45,6 +46,13 @@ await resolveTemplateIds().then(hash => {
 // ---------------------------------------------------------------------------
 
 validateAuthConfig();
+
+// Check that admin parties are actually allocated on the ledger (non-fatal).
+// This distinguishes real/mock/missing parties and logs a warning for required
+// assets (CC, USDCx) that are unallocated. Fire-and-forget so boot isn't blocked.
+validateAdminParties().catch((err) => {
+  logger.warn('Admin party validation errored', { error: String(err) });
+});
 
 // ---------------------------------------------------------------------------
 // Entry point

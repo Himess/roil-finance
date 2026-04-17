@@ -34,6 +34,7 @@ testTransferFlow = script do
       createdAt = time (date 2026 Mar 15) 10 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
 
   -- 2. Bob approves the transfer
   logCid <- submit bob do
@@ -83,6 +84,7 @@ testSwapFlow = script do
       createdAt = time (date 2026 Mar 15) 11 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
       sellHoldingCid = None
 
   -- 2. Platform executes the swap (after Cantex confirmation)
@@ -128,6 +130,7 @@ testRejectTransfer = script do
       createdAt = time (date 2026 Mar 15) 12 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
 
   -- 2. Bob rejects the transfer
   rejectedCid <- submit bob do
@@ -169,6 +172,7 @@ testWithdrawTransfer = script do
       createdAt = time (date 2026 Mar 15) 13 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
 
   -- 2. Alice (sender) withdraws the transfer
   submit alice do
@@ -205,6 +209,7 @@ testCancelSwap = script do
       createdAt = time (date 2026 Mar 15) 14 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
       sellHoldingCid = None
 
   -- 2. Alice cancels the swap
@@ -237,7 +242,7 @@ testMultipleOperations = script do
       instrumentId = "CC"; instrumentAdmin = tokenAdmin
       amount = 100.0; status = TransferPending
       memo = "Transfer 1"; createdAt = time (date 2026 Mar 15) 10 0 0
-      settlement = None; metadata = empty
+      settlement = None; metadata = empty; spliceInstructionCid = None
   submit bob do
     exerciseCmd t1 ApproveTransfer with
       approvedAt = time (date 2026 Mar 15) 10 1 0
@@ -249,7 +254,7 @@ testMultipleOperations = script do
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
       amount = 200.0; status = TransferPending
       memo = "Transfer 2"; createdAt = time (date 2026 Mar 15) 11 0 0
-      settlement = None; metadata = empty
+      settlement = None; metadata = empty; spliceInstructionCid = None
   submit bob do
     exerciseCmd t2 ApproveTransfer with
       approvedAt = time (date 2026 Mar 15) 11 1 0
@@ -262,7 +267,7 @@ testMultipleOperations = script do
       buyAsset = "USDCx"; buyAdmin = tokenAdmin; buyAmount = 75.0
       minBuyAmount = 70.0
       status = TransferPending; createdAt = time (date 2026 Mar 15) 12 0 0
-      settlement = None; metadata = empty; sellHoldingCid = None
+      settlement = None; metadata = empty; sellHoldingCid = None; spliceInstructionCid = None
   submit platform do
     exerciseCmd s1 ExecuteSwap with
       actualBuyAmount = 74.5
@@ -298,7 +303,7 @@ testAuthorization = script do
       instrumentId = "USDCx"; instrumentAdmin = tokenAdmin
       amount = 100.0; status = TransferPending
       memo = "Auth test"; createdAt = time (date 2026 Mar 15) 15 0 0
-      settlement = None; metadata = empty
+      settlement = None; metadata = empty; spliceInstructionCid = None
 
   -- Charlie (not receiver) should NOT be able to approve
   submitMustFail charlie do
@@ -337,7 +342,7 @@ testCBTCSwap = script do
       buyAsset = "CBTC"; buyAdmin = cbtcAdmin; buyAmount = 0.001
       minBuyAmount = 0.0009
       status = TransferPending; createdAt = time (date 2026 Mar 15) 16 0 0
-      settlement = None; metadata = empty; sellHoldingCid = None
+      settlement = None; metadata = empty; sellHoldingCid = None; spliceInstructionCid = None
 
   logCid <- submit platform do
     exerciseCmd swapCid ExecuteSwap with
@@ -378,6 +383,7 @@ testSlippageRejection = script do
       createdAt = time (date 2026 Mar 15) 17 0 0
       settlement = None
       metadata = empty
+      spliceInstructionCid = None
       sellHoldingCid = None
 
   -- Should fail: actualBuyAmount (130.0) < minBuyAmount (145.0)
@@ -425,6 +431,7 @@ testSettlementDeadlineValidation = script do
       createdAt = time (date 2026 Mar 15) 10 0 0
       settlement = Some settlementInfo
       metadata = empty
+      spliceInstructionCid = None
 
   -- Approve BEFORE deadline → should succeed (sanity check)
   -- We need a second transfer for the failure case, so let's test failure first
@@ -468,6 +475,7 @@ testTransferWithMetadata = script do
       createdAt = time (date 2026 Mar 15) 10 0 0
       settlement = None
       metadata = meta
+      spliceInstructionCid = None
 
   -- Approve the transfer
   logCid <- submit bob do
@@ -513,6 +521,7 @@ testSwapWithMetadata = script do
       settlement = None
       metadata = meta
       sellHoldingCid = None
+      spliceInstructionCid = None
 
   -- Execute the swap
   logCid <- submit platform do

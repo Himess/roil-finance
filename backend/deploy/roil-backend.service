@@ -5,14 +5,29 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User=root
-WorkingDirectory=/root/roil-backend
+User=roil
+Group=roil
+WorkingDirectory=/opt/roil-backend
+ExecStartPre=/usr/bin/curl --fail --silent --max-time 3 http://localhost:3001/health || /bin/true
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=10
-StandardOutput=append:/var/log/roil-backend.log
-StandardError=append:/var/log/roil-backend.log
-EnvironmentFile=/root/roil-backend/.env
+StandardOutput=append:/var/log/roil-backend/backend.log
+StandardError=append:/var/log/roil-backend/backend.log
+EnvironmentFile=/opt/roil-backend/.env
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/roil-backend /opt/roil-backend
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
 
 LimitNOFILE=65536
 

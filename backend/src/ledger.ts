@@ -287,11 +287,21 @@ export class DamlLedger {
 
   /**
    * Query active contracts by template, optionally filtered by party.
+   *
+   * Canton JSON Ledger API v2 returns contracts as of a single offset
+   * (`activeAtOffset`), so this is a point-in-time snapshot rather than
+   * a streaming query. A `limit` is included in the request body; if the
+   * response size reaches the limit we log a warning so operators see the
+   * potential truncation and can raise the limit or iterate via updates.
+   *
+   * For unbounded iteration use `iterateActiveContracts`.
    */
   async queryContracts<T = Record<string, unknown>>(
     filtersByParty: Record<string, { templateIds: string[] }>,
     actAs: string[],
+    opts: { limit?: number } = {},
   ): Promise<DamlContract<T>[]> {
+    const limit = opts.limit ?? 2000;
     const filters: Record<string, unknown> = {};
     for (const [party, f] of Object.entries(filtersByParty)) {
       filters[party] = {
@@ -311,6 +321,7 @@ export class DamlLedger {
       {
         eventFormat: { filtersByParty: filters, verbose: true },
         activeAtOffset: ledgerEnd.offset,
+        limit,
       },
       actAs,
     );
@@ -319,6 +330,23 @@ export class DamlLedger {
     const rawContracts: ActiveContractsResponse[] = Array.isArray(result)
       ? result
       : ((result as { activeContracts?: ActiveContractsResponse[] }).activeContracts || []);
+
+    // Warn if the response is at or near the limit — likely truncation.
+    if (rawContracts.length >= limit) {
+      const templates = Object.values(filtersByParty)
+        .flatMap((f) => f.templateIds)
+        .join(',');
+      // Lazy import to avoid a cycle with monitoring/logger at module load
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      void import('./monitoring/logger.js').then(({ logger }) =>
+        logger.warn('active-contracts snapshot reached limit — possible truncation', {
+          limit,
+          count: rawContracts.length,
+          templates,
+          parties: Object.keys(filtersByParty),
+        }),
+      );
+    }
 
     return rawContracts.map((item: ActiveContractsResponse) => {
       // Handle v2 nested format
@@ -330,6 +358,31 @@ export class DamlLedger {
         createdEventBlob: event.createdEventBlob ?? item.createdEventBlob,
       } as DamlContract<T>;
     });
+  }
+
+  /**
+   * Unbounded iteration over active contracts. Yields contracts in batches
+   * until no more are returned. Uses a rising `limit` per call — callers that
+   * truly need the full set should consume this generator exhaustively.
+   *
+   * NOTE: v2 `active-contracts` is a snapshot; there is no cursor. To avoid
+   * missing updates this helper re-queries at a fresh ledger offset on each
+   * iteration, so the result may include contracts archived between calls.
+   * Consumers should deduplicate by `contractId`.
+   */
+  async *iterateActiveContracts<T = Record<string, unknown>>(
+    filtersByParty: Record<string, { templateIds: string[] }>,
+    actAs: string[],
+    batchSize = 2000,
+  ): AsyncGenerator<DamlContract<T>[], void, unknown> {
+    let currentLimit = batchSize;
+    const maxLimit = 50_000; // hard ceiling to prevent runaway growth
+    while (currentLimit <= maxLimit) {
+      const batch = await this.queryContracts<T>(filtersByParty, actAs, { limit: currentLimit });
+      yield batch;
+      if (batch.length < currentLimit) return; // no truncation → done
+      currentLimit = Math.min(currentLimit * 2, maxLimit); // widen window on next pass
+    }
   }
 
   /**

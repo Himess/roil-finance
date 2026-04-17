@@ -1,0 +1,279 @@
+-- | Tests for DCA schedule and execution contracts.
+-- Covers: schedule creation, amount/frequency updates, pause/resume, cancel,
+-- execution lifecycle, completion, and failure handling.
+module TestDCA where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import DCA
+import Types
+
+-- ============================================================================
+-- TEST FIXTURES
+-- ============================================================================
+
+setupFixture : Script (Party, Party, AssetId, AssetId, Time)
+setupFixture = do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  usdcAdmin <- allocateParty "UsdcAdmin"
+  cbtcAdmin <- allocateParty "CbtcAdmin"
+  let usdcx = AssetId { symbol = "USDCx", admin = usdcAdmin }
+  let cbtc  = AssetId { symbol = "CBTC",  admin = cbtcAdmin }
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  pure (platform, alice, usdcx, cbtc, t0)
+
+-- ============================================================================
+-- SCHEDULE CREATION
+-- ============================================================================
+
+-- | Test 1: Create DCA schedule with valid params.
+testCreateDCASchedule : Script ()
+testCreateDCASchedule = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = cbtc
+      amountPerBuy = 100.0
+      frequency = Daily
+      totalExecutions = 0
+      isActive = True
+      createdAt = t0
+  schedules <- query @DCASchedule alice
+  assertMsg "Should have 1 schedule" (length schedules == 1)
+  let (_, sched) = head schedules
+  assertMsg "Amount should be 100" (sched.amountPerBuy == 100.0)
+  assertMsg "Schedule should be active" sched.isActive
+  assertMsg "totalExecutions starts at 0" (sched.totalExecutions == 0)
+
+-- | Test 2: Ensure clause rejects non-positive amountPerBuy.
+testCreateDCA_RejectsZeroAmount : Script ()
+testCreateDCA_RejectsZeroAmount = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  submitMustFail platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = cbtc
+      amountPerBuy = 0.0
+      frequency = Daily
+      totalExecutions = 0
+      isActive = True
+      createdAt = t0
+
+-- | Test 3: Ensure clause rejects source == target.
+testCreateDCA_RejectsSameAsset : Script ()
+testCreateDCA_RejectsSameAsset = script do
+  (platform, alice, usdcx, _, t0) <- setupFixture
+  submitMustFail platform do
+    createCmd DCASchedule with
+      platform
+      user = alice
+      sourceAsset = usdcx
+      targetAsset = usdcx
+      amountPerBuy = 100.0
+      frequency = Daily
+      totalExecutions = 0
+      isActive = True
+      createdAt = t0
+
+-- ============================================================================
+-- SCHEDULE UPDATES
+-- ============================================================================
+
+-- | Test 4: UpdateDCAAmount by user.
+testUpdateDCAAmount : Script ()
+testUpdateDCAAmount = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  newCid <- submit alice do
+    exerciseCmd scheduleCid UpdateDCAAmount with newAmount = 250.0
+  schedules <- query @DCASchedule alice
+  let (_, sched) = head schedules
+  assertMsg "Amount updated to 250" (sched.amountPerBuy == 250.0)
+
+-- | Test 5: UpdateDCAAmount rejects zero.
+testUpdateDCAAmount_RejectsZero : Script ()
+testUpdateDCAAmount_RejectsZero = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  submitMustFail alice do
+    exerciseCmd scheduleCid UpdateDCAAmount with newAmount = 0.0
+
+-- | Test 6: UpdateDCAFrequency by user.
+testUpdateDCAFrequency : Script ()
+testUpdateDCAFrequency = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  newCid <- submit alice do
+    exerciseCmd scheduleCid UpdateDCAFrequency with newFrequency = Weekly
+  schedules <- query @DCASchedule alice
+  let (_, sched) = head schedules
+  assertMsg "Frequency updated to Weekly" (sched.frequency == Weekly)
+
+-- ============================================================================
+-- PAUSE / RESUME / CANCEL
+-- ============================================================================
+
+-- | Test 7: Pause then resume.
+testPauseResumeDCA : Script ()
+testPauseResumeDCA = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  pausedCid <- submit alice do exerciseCmd scheduleCid PauseDCA
+  schedulesPaused <- query @DCASchedule alice
+  let (_, s1) = head schedulesPaused
+  assertMsg "Should be paused" (not s1.isActive)
+  resumedCid <- submit alice do exerciseCmd pausedCid ResumeDCA
+  schedulesResumed <- query @DCASchedule alice
+  let (_, s2) = head schedulesResumed
+  assertMsg "Should be active again" s2.isActive
+
+-- | Test 8: Paused schedule cannot be executed.
+testExecute_RejectsPaused : Script ()
+testExecute_RejectsPaused = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  pausedCid <- submit alice do exerciseCmd scheduleCid PauseDCA
+  submitMustFail platform do
+    exerciseCmd pausedCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+
+-- | Test 9: CancelDCA archives the schedule.
+testCancelDCA : Script ()
+testCancelDCA = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  submit alice do exerciseCmd scheduleCid CancelDCA
+  schedules <- query @DCASchedule alice
+  assertMsg "Schedule should be archived" (length schedules == 0)
+
+-- ============================================================================
+-- EXECUTION LIFECYCLE
+-- ============================================================================
+
+-- | Test 10: ExecuteDCA creates new DCAExecution and increments totalExecutions.
+testExecuteDCA : Script ()
+testExecuteDCA = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  result <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+  schedules <- query @DCASchedule alice
+  let (_, sched) = head schedules
+  assertMsg "totalExecutions incremented" (sched.totalExecutions == 1)
+  executions <- query @DCAExecution alice
+  assertMsg "Should have 1 execution" (length executions == 1)
+  let (_, exec) = head executions
+  assertMsg "Execution number is 1" (exec.executionNumber == 1)
+  assertMsg "Status is Pending" (exec.status == Pending)
+  assertMsg "sourceAmount equals amountPerBuy" (exec.sourceAmount == 100.0)
+
+-- | Test 11: CompleteDCAExecution creates DCALog with received amount.
+testCompleteDCAExecution : Script ()
+testCompleteDCAExecution = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  result <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+  completion <- submit platform do
+    exerciseCmd result.executionCid CompleteDCAExecution with
+      receivedAmount = 0.0025
+      completedAt = time (date 2026 Mar 16) 10 0 5
+  logs <- query @DCALog alice
+  assertMsg "Should have 1 log" (length logs == 1)
+  let (_, log) = head logs
+  assertMsg "Log targetAmount is 0.0025" (log.targetAmount == 0.0025)
+
+-- | Test 12: FailDCAExecution records failure with reason.
+testFailDCAExecution : Script ()
+testFailDCAExecution = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  result <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+  failedCid <- submit platform do
+    exerciseCmd result.executionCid FailDCAExecution with reason = "Cantex liquidity"
+  executions <- query @DCAExecution alice
+  let (_, exec) = head executions
+  case exec.status of
+    Failed r -> assertMsg "Reason should match" (r == "Cantex liquidity")
+    _ -> abort "Status should be Failed"
+
+-- | Test 13: Cannot complete an already-failed execution.
+testComplete_RejectsFailed : Script ()
+testComplete_RejectsFailed = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 100.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  result <- submit platform do
+    exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+  failedCid <- submit platform do
+    exerciseCmd result.executionCid FailDCAExecution with reason = "timeout"
+  submitMustFail platform do
+    exerciseCmd failedCid CompleteDCAExecution with
+      receivedAmount = 0.01
+      completedAt = time (date 2026 Mar 16) 10 0 5
+
+-- | Test 14: Multiple executions accumulate correctly.
+testMultipleExecutions : Script ()
+testMultipleExecutions = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 50.0; frequency = Hourly; totalExecutions = 0
+      isActive = True; createdAt = t0
+  -- 3 consecutive executions
+  r1 <- submit platform do exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
+  r2 <- submit platform do exerciseCmd r1.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 11 0 0
+  r3 <- submit platform do exerciseCmd r2.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 12 0 0
+  schedules <- query @DCASchedule alice
+  let (_, sched) = head schedules
+  assertMsg "totalExecutions is 3" (sched.totalExecutions == 3)
+  executions <- query @DCAExecution alice
+  assertMsg "Should have 3 executions" (length executions == 3)

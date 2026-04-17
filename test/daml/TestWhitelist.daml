@@ -1,0 +1,285 @@
+-- | Tests for Whitelist: config, members, invite codes.
+-- Covers: config creation, add to whitelist (with capacity check),
+-- limit updates, member activation/deactivation, invite code lifecycle.
+module TestWhitelist where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import Whitelist
+
+-- ============================================================================
+-- FIXTURES
+-- ============================================================================
+
+makeConfig : Party -> Int -> Script (ContractId WhitelistConfig)
+makeConfig platform maxUsers =
+  submit platform do
+    createCmd WhitelistConfig with
+      platform
+      maxUsers
+      dailySwapLimitUsd = 50.0
+      maxTradeSizeUsd = 25.0
+      totalUsers = 0
+      isOpen = True
+
+-- ============================================================================
+-- CONFIG CREATION
+-- ============================================================================
+
+-- | Test 1: Create valid config.
+testCreateConfig : Script ()
+testCreateConfig = script do
+  platform <- allocateParty "Platform"
+  _ <- makeConfig platform 1000
+  configs <- query @WhitelistConfig platform
+  assertMsg "Should have 1 config" (length configs == 1)
+  let (_, cfg) = head configs
+  assertMsg "maxUsers 1000" (cfg.maxUsers == 1000)
+  assertMsg "totalUsers 0" (cfg.totalUsers == 0)
+  assertMsg "isOpen" cfg.isOpen
+
+-- | Test 2: Ensure clause rejects maxUsers <= 0.
+testCreateConfig_RejectsInvalidMax : Script ()
+testCreateConfig_RejectsInvalidMax = script do
+  platform <- allocateParty "Platform"
+  submitMustFail platform do
+    createCmd WhitelistConfig with
+      platform
+      maxUsers = 0
+      dailySwapLimitUsd = 50.0
+      maxTradeSizeUsd = 25.0
+      totalUsers = 0
+      isOpen = True
+
+-- | Test 3: Ensure clause rejects totalUsers > maxUsers.
+testCreateConfig_RejectsOverflow : Script ()
+testCreateConfig_RejectsOverflow = script do
+  platform <- allocateParty "Platform"
+  submitMustFail platform do
+    createCmd WhitelistConfig with
+      platform
+      maxUsers = 5
+      dailySwapLimitUsd = 50.0
+      maxTradeSizeUsd = 25.0
+      totalUsers = 10
+      isOpen = True
+
+-- ============================================================================
+-- ADD TO WHITELIST
+-- ============================================================================
+
+-- | Test 4: AddToWhitelist increments totalUsers and creates member.
+testAddToWhitelist : Script ()
+testAddToWhitelist = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 1000
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (newConfigCid, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice
+      email = Some "alice@example.com"
+      invitedBy = None
+      joinedAt = t0
+  configs <- query @WhitelistConfig platform
+  let (_, cfg) = head configs
+  assertMsg "totalUsers incremented" (cfg.totalUsers == 1)
+  members <- query @WhitelistMember alice
+  assertMsg "Member created" (length members == 1)
+  let (_, m) = head members
+  assertMsg "Member is active" m.isActive
+  assertMsg "3 invite codes" (m.inviteCodesRemaining == 3)
+
+-- | Test 5: Cannot add beyond capacity.
+testAddToWhitelist_RejectsFull : Script ()
+testAddToWhitelist_RejectsFull = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  configCid <- submit platform do
+    createCmd WhitelistConfig with
+      platform; maxUsers = 1
+      dailySwapLimitUsd = 50.0; maxTradeSizeUsd = 25.0
+      totalUsers = 0; isOpen = True
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (cfg2, _) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+  -- Second add should fail (full)
+  submitMustFail platform do
+    exerciseCmd cfg2 AddToWhitelist with
+      user = bob; email = None; invitedBy = None; joinedAt = t0
+
+-- | Test 6: Cannot add when closed.
+testAddToWhitelist_RejectsClosed : Script ()
+testAddToWhitelist_RejectsClosed = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 100
+  closedCid <- submit platform do
+    exerciseCmd configCid ToggleWhitelist with newIsOpen = False
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  submitMustFail platform do
+    exerciseCmd closedCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+
+-- ============================================================================
+-- LIMITS UPDATE
+-- ============================================================================
+
+-- | Test 7: UpdateLimits by platform.
+testUpdateLimits : Script ()
+testUpdateLimits = script do
+  platform <- allocateParty "Platform"
+  configCid <- makeConfig platform 1000
+  updatedCid <- submit platform do
+    exerciseCmd configCid UpdateLimits with
+      newDailyLimit = 100.0
+      newMaxTrade = 50.0
+  configs <- query @WhitelistConfig platform
+  let (_, cfg) = head configs
+  assertMsg "Daily limit updated" (cfg.dailySwapLimitUsd == 100.0)
+  assertMsg "Max trade updated" (cfg.maxTradeSizeUsd == 50.0)
+
+-- | Test 8: UpdateLimits rejects non-positive values.
+testUpdateLimits_RejectsInvalid : Script ()
+testUpdateLimits_RejectsInvalid = script do
+  platform <- allocateParty "Platform"
+  configCid <- makeConfig platform 1000
+  submitMustFail platform do
+    exerciseCmd configCid UpdateLimits with
+      newDailyLimit = 0.0
+      newMaxTrade = 50.0
+
+-- ============================================================================
+-- MEMBER ACTIVATION / DEACTIVATION
+-- ============================================================================
+
+-- | Test 9: DeactivateMember then ReactivateMember.
+testDeactivateReactivate : Script ()
+testDeactivateReactivate = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 1000
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (_, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+  deactivated <- submit platform do
+    exerciseCmd memberCid DeactivateMember
+  membersInactive <- query @WhitelistMember alice
+  let (_, m1) = head membersInactive
+  assertMsg "Member is inactive" (not m1.isActive)
+  reactivated <- submit platform do
+    exerciseCmd deactivated ReactivateMember
+  membersActive <- query @WhitelistMember alice
+  let (_, m2) = head membersActive
+  assertMsg "Member is active again" m2.isActive
+
+-- | Test 10: Cannot deactivate already-inactive member.
+testDeactivate_RejectsAlreadyInactive : Script ()
+testDeactivate_RejectsAlreadyInactive = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 1000
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (_, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+  deactivated <- submit platform do exerciseCmd memberCid DeactivateMember
+  submitMustFail platform do
+    exerciseCmd deactivated DeactivateMember
+
+-- ============================================================================
+-- INVITE CODES
+-- ============================================================================
+
+-- | Test 11: UseInviteCode decrements count.
+testUseInviteCode : Script ()
+testUseInviteCode = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 1000
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (_, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+  used1 <- submit platform do exerciseCmd memberCid UseInviteCode
+  used2 <- submit platform do exerciseCmd used1 UseInviteCode
+  used3 <- submit platform do exerciseCmd used2 UseInviteCode
+  members <- query @WhitelistMember alice
+  let (_, m) = head members
+  assertMsg "0 codes remaining" (m.inviteCodesRemaining == 0)
+  submitMustFail platform do exerciseCmd used3 UseInviteCode
+
+-- | Test 12: Inactive member cannot use invite codes.
+testUseInviteCode_RejectsInactive : Script ()
+testUseInviteCode_RejectsInactive = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  configCid <- makeConfig platform 1000
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  (_, memberCid) <- submit platform do
+    exerciseCmd configCid AddToWhitelist with
+      user = alice; email = None; invitedBy = None; joinedAt = t0
+  deactivated <- submit platform do exerciseCmd memberCid DeactivateMember
+  submitMustFail platform do
+    exerciseCmd deactivated UseInviteCode
+
+-- | Test 13: InviteCode create + redeem.
+testInviteCodeRedeem : Script ()
+testInviteCodeRedeem = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  codeCid <- submit platform do
+    createCmd InviteCode with
+      platform; code = "ROIL-INVITE-001"
+      createdBy = alice
+      isUsed = False
+      usedBy = None
+      createdAt = t0
+  redeemed <- submit platform do
+    exerciseCmd codeCid RedeemInvite with
+      redeemer = bob
+      redeemedAt = t0
+  codes <- query @InviteCode alice
+  let (_, code) = head codes
+  assertMsg "Code is used" code.isUsed
+  assertMsg "usedBy is Bob" (code.usedBy == Some bob)
+
+-- | Test 14: Cannot redeem already-used code.
+testRedeem_RejectsAlreadyUsed : Script ()
+testRedeem_RejectsAlreadyUsed = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  bob <- allocateParty "Bob"
+  carol <- allocateParty "Carol"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  codeCid <- submit platform do
+    createCmd InviteCode with
+      platform; code = "ROIL-INVITE-002"
+      createdBy = alice
+      isUsed = False; usedBy = None
+      createdAt = t0
+  redeemed <- submit platform do
+    exerciseCmd codeCid RedeemInvite with
+      redeemer = bob; redeemedAt = t0
+  submitMustFail platform do
+    exerciseCmd redeemed RedeemInvite with
+      redeemer = carol; redeemedAt = t0
+
+-- | Test 15: Empty code rejected by ensure.
+testInviteCode_RejectsEmpty : Script ()
+testInviteCode_RejectsEmpty = script do
+  platform <- allocateParty "Platform"
+  alice <- allocateParty "Alice"
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  submitMustFail platform do
+    createCmd InviteCode with
+      platform; code = ""
+      createdBy = alice; isUsed = False; usedBy = None
+      createdAt = t0

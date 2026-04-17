@@ -34,3 +34,6 @@ Thumbs.db
 # Canton setup files (large binaries)
 setup/
 .cn-quickstart/
+
+# Internal / strategy docs — not for public repo
+docs-internal/

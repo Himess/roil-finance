@@ -2,13 +2,18 @@
 -- Wraps token transfer and swap operations so the rebalancer can move
 -- real tokens (CC, USDCx, CBTC) on the Canton Network.
 --
--- Splice Token Standard types (InstrumentId, Holding) are used for
--- compatibility. The backend bridges to actual Splice token contracts
--- via the Ledger API and Token Standard REST endpoints.
+-- Splice Token Standard types (InstrumentId, Holding, TransferInstruction)
+-- are used for full CIP-0056 compliance. Transfers are atomic via the
+-- Splice TransferFactory pattern:
+--   1. Backend creates TransferRequest (this module) with settlement metadata
+--   2. Backend exercises Splice TransferFactory_Transfer to produce TransferInstruction
+--   3. Instruction cid is attached to TransferRequest via LinkSpliceInstruction
+--   4. Counterparty accepts/rejects through TransferInstruction choices
 module TokenTransfer where
 
 import Types
 import Splice.Api.Token.HoldingV1 qualified as SpliceHolding
+import Splice.Api.Token.TransferInstructionV1 qualified as SpliceTransfer
 import DA.TextMap (TextMap, empty)
 
 -- | Status of a transfer or swap
@@ -16,20 +21,25 @@ data TransferStatus = TransferPending | TransferCompleted | TransferRejected | T
   deriving (Eq, Show)
 
 -- | Transfer request between parties.
--- Includes CIP-0056 settlement fields and extensible metadata.
+-- Includes CIP-0056 settlement fields, Splice TransferInstruction link, and extensible metadata.
+-- The optional `spliceInstructionCid` references the atomic Splice TransferInstruction
+-- produced by exercising TransferFactory_Transfer. When present, settlement is guaranteed
+-- atomic at the ledger level (no divergence between log and actual holdings).
 template TransferRequest
   with
-    platform        : Party
-    sender          : Party
-    receiver        : Party
-    instrumentId    : Text
-    instrumentAdmin : Party
-    amount          : Decimal
-    status          : TransferStatus
-    memo            : Text
-    createdAt       : Time
-    settlement      : Optional SettlementInfo  -- CIP-0056 settlement timing
-    metadata        : TextMap Text             -- extensible metadata (CIP-0056 aligned)
+    platform             : Party
+    sender               : Party
+    receiver             : Party
+    instrumentId         : Text
+    instrumentAdmin      : Party
+    amount               : Decimal
+    status               : TransferStatus
+    memo                 : Text
+    createdAt            : Time
+    settlement           : Optional SettlementInfo  -- CIP-0056 settlement timing
+    metadata             : TextMap Text             -- extensible metadata (CIP-0056 aligned)
+    spliceInstructionCid : Optional (ContractId SpliceTransfer.TransferInstruction)
+      -- CIP-0056 atomic transfer instruction (optional: local-only logs skip this)
   where
     signatory platform, sender
     observer receiver
@@ -53,6 +63,7 @@ template TransferRequest
           instrumentAdmin; amount; memo
           completedAt = approvedAt
           metadata
+          spliceInstructionCid
 
     -- Receiver rejects the transfer
     choice RejectTransfer : ContractId TransferRequest
@@ -66,26 +77,38 @@ template TransferRequest
       controller sender
       do pure ()
 
+    -- Link an atomic Splice TransferInstruction to this request (backend calls after
+    -- exercising TransferFactory_Transfer). Binds off-chain log to on-chain instruction.
+    choice LinkSpliceInstruction : ContractId TransferRequest
+      with
+        instructionCid : ContractId SpliceTransfer.TransferInstruction
+      controller platform
+      do
+        assertMsg "Instruction already linked" (spliceInstructionCid == None)
+        create this with spliceInstructionCid = Some instructionCid
+
 -- | Atomic swap request (DvP) for rebalancing.
 -- Two legs: sell one asset, buy another.
 -- Includes CIP-0056 settlement fields for deadline enforcement.
 -- sellHoldingCid links to the real Splice Holding contract on-chain.
 template SwapRequest
   with
-    platform       : Party
-    user           : Party
-    sellAsset      : Text
-    sellAdmin      : Party
-    sellAmount     : Decimal
-    buyAsset       : Text
-    buyAdmin       : Party
-    buyAmount      : Decimal      -- expected amount (from quote)
-    minBuyAmount   : Decimal      -- minimum acceptable buy amount (slippage protection)
-    status         : TransferStatus
-    createdAt      : Time
-    settlement     : Optional SettlementInfo  -- CIP-0056 settlement timing
-    metadata       : TextMap Text             -- extensible metadata
-    sellHoldingCid : Optional (ContractId SpliceHolding.Holding) -- Splice on-chain holding
+    platform             : Party
+    user                 : Party
+    sellAsset            : Text
+    sellAdmin            : Party
+    sellAmount           : Decimal
+    buyAsset             : Text
+    buyAdmin             : Party
+    buyAmount            : Decimal      -- expected amount (from quote)
+    minBuyAmount         : Decimal      -- minimum acceptable buy amount (slippage protection)
+    status               : TransferStatus
+    createdAt            : Time
+    settlement           : Optional SettlementInfo  -- CIP-0056 settlement timing
+    metadata             : TextMap Text             -- extensible metadata
+    sellHoldingCid       : Optional (ContractId SpliceHolding.Holding) -- Splice on-chain holding
+    spliceInstructionCid : Optional (ContractId SpliceTransfer.TransferInstruction)
+      -- CIP-0056 atomic transfer instruction for the sell leg
   where
     signatory platform, user
     ensure sellAmount > 0.0 && buyAmount > 0.0 && minBuyAmount >= 0.0 && minBuyAmount <= buyAmount
@@ -109,41 +132,53 @@ template SwapRequest
           buyAsset; buyAmount = actualBuyAmount
           timestamp = executedAt
           metadata
+          spliceInstructionCid
 
     -- User cancels the swap
     choice CancelSwap : ()
       controller user
       do pure ()
 
+    -- Link atomic Splice TransferInstruction for the sell leg
+    choice LinkSwapSpliceInstruction : ContractId SwapRequest
+      with
+        instructionCid : ContractId SpliceTransfer.TransferInstruction
+      controller platform
+      do
+        assertMsg "Instruction already linked" (spliceInstructionCid == None)
+        create this with spliceInstructionCid = Some instructionCid
+
 -- | Immutable transfer log.
--- Includes metadata for full audit trail.
+-- Includes metadata and the atomic Splice instruction reference (if used) for audit trail.
 template TransferLog
   with
-    platform        : Party
-    sender          : Party
-    receiver        : Party
-    instrumentId    : Text
-    instrumentAdmin : Party
-    amount          : Decimal
-    memo            : Text
-    completedAt     : Time
-    metadata        : TextMap Text
+    platform             : Party
+    sender               : Party
+    receiver             : Party
+    instrumentId         : Text
+    instrumentAdmin      : Party
+    amount               : Decimal
+    memo                 : Text
+    completedAt          : Time
+    metadata             : TextMap Text
+    spliceInstructionCid : Optional (ContractId SpliceTransfer.TransferInstruction)
   where
     signatory platform
     observer sender, receiver
 
 -- | Immutable swap log.
--- Includes metadata for full audit trail.
+-- Includes metadata and atomic Splice instruction reference (if used) for full audit trail.
 template SwapLog
   with
-    platform  : Party
-    user      : Party
-    sellAsset : Text
-    sellAmount : Decimal
-    buyAsset  : Text
-    buyAmount : Decimal
-    timestamp : Time
-    metadata  : TextMap Text
+    platform             : Party
+    user                 : Party
+    sellAsset            : Text
+    sellAmount           : Decimal
+    buyAsset             : Text
+    buyAmount            : Decimal
+    timestamp            : Time
+    metadata             : TextMap Text
+    spliceInstructionCid : Optional (ContractId SpliceTransfer.TransferInstruction)
   where
     signatory platform
     observer user

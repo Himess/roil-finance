@@ -1,0 +1,293 @@
+-- | Tests for TransferPreapproval: execute, revoke, update limits/expiry,
+-- deactivate/reactivate, CanTransfer checks.
+module TestTransferPreapproval where
+
+import Daml.Script
+import DA.List (head)
+import DA.Date
+import DA.Time
+import TransferPreapproval
+
+-- ============================================================================
+-- FIXTURES
+-- ============================================================================
+
+setup : Script (Party, Party, Party, Time, Time)
+setup = do
+  alice <- allocateParty "Alice"       -- sender
+  bob   <- allocateParty "Bob"         -- receiver
+  roil  <- allocateParty "Roil"        -- provider (FA rewards)
+  let t0 = time (date 2026 Mar 15) 10 0 0
+  let tExp = time (date 2026 Dec 31) 23 59 59
+  pure (alice, bob, roil, t0, tExp)
+
+makePreapproval : Party -> Party -> Party -> Time -> Time -> Decimal -> Script (ContractId TransferPreapproval)
+makePreapproval alice bob roil t0 tExp maxAmount =
+  submit (actAs alice <> actAs bob) do
+    createCmd TransferPreapproval with
+      sender = alice
+      receiver = bob
+      provider = roil
+      instrumentId = "USDCx"
+      maxAmountPerTransfer = maxAmount
+      expiresAt = tExp
+      isActive = True
+      totalTransferred = 0.0
+      totalTransferCount = 0
+      createdAt = t0
+
+-- ============================================================================
+-- CREATION
+-- ============================================================================
+
+-- | Test 1: Create valid preapproval.
+testCreatePreapproval : Script ()
+testCreatePreapproval = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  _ <- makePreapproval alice bob roil t0 tExp 100.0
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Should have 1 preapproval" (length preapprovals == 1)
+  let (_, pa) = head preapprovals
+  assertMsg "Max is 100" (pa.maxAmountPerTransfer == 100.0)
+  assertMsg "Is active" pa.isActive
+  assertMsg "totalTransferred 0" (pa.totalTransferred == 0.0)
+
+-- | Test 2: Ensure clause rejects non-positive max amount.
+testCreatePreapproval_RejectsZero : Script ()
+testCreatePreapproval_RejectsZero = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  submitMustFail alice do
+    createCmd TransferPreapproval with
+      sender = alice; receiver = bob; provider = roil
+      instrumentId = "USDCx"
+      maxAmountPerTransfer = 0.0
+      expiresAt = tExp
+      isActive = True
+      totalTransferred = 0.0; totalTransferCount = 0
+      createdAt = t0
+
+-- ============================================================================
+-- EXECUTE TRANSFERS
+-- ============================================================================
+
+-- | Test 3: Execute within limit updates totals and creates log.
+testExecutePreapprovedTransfer : Script ()
+testExecutePreapprovedTransfer = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tExec = time (date 2026 Apr 1) 12 0 0
+  result <- submit alice do
+    exerciseCmd paCid ExecutePreapprovedTransfer with
+      amount = 50.0
+      memo = "rent"
+      executedAt = tExec
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "totalTransferred 50" (pa.totalTransferred == 50.0)
+  assertMsg "transferCount 1" (pa.totalTransferCount == 1)
+  logs <- query @PreapprovedTransferLog alice
+  assertMsg "Should have 1 log" (length logs == 1)
+  let (_, log) = head logs
+  assertMsg "Log amount 50" (log.amount == 50.0)
+  assertMsg "Memo is rent" (log.memo == "rent")
+
+-- | Test 4: Cannot exceed maxAmountPerTransfer.
+testExecute_RejectsOverLimit : Script ()
+testExecute_RejectsOverLimit = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tExec = time (date 2026 Apr 1) 12 0 0
+  submitMustFail alice do
+    exerciseCmd paCid ExecutePreapprovedTransfer with
+      amount = 150.0; memo = ""; executedAt = tExec
+
+-- | Test 5: Cannot execute after expiry.
+testExecute_RejectsAfterExpiry : Script ()
+testExecute_RejectsAfterExpiry = script do
+  (alice, bob, roil, t0, _) <- setup
+  let tExp = time (date 2026 Apr 1) 10 0 0
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tAfter = time (date 2026 Apr 2) 10 0 0  -- 1 day after expiry
+  submitMustFail alice do
+    exerciseCmd paCid ExecutePreapprovedTransfer with
+      amount = 50.0; memo = ""; executedAt = tAfter
+
+-- | Test 6: Cannot execute when deactivated.
+testExecute_RejectsDeactivated : Script ()
+testExecute_RejectsDeactivated = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  deactivatedCid <- submit bob do exerciseCmd paCid DeactivatePreapproval
+  let tExec = time (date 2026 Apr 1) 12 0 0
+  submitMustFail alice do
+    exerciseCmd deactivatedCid ExecutePreapprovedTransfer with
+      amount = 50.0; memo = ""; executedAt = tExec
+
+-- | Test 7: Cannot execute zero amount.
+testExecute_RejectsZero : Script ()
+testExecute_RejectsZero = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tExec = time (date 2026 Apr 1) 12 0 0
+  submitMustFail alice do
+    exerciseCmd paCid ExecutePreapprovedTransfer with
+      amount = 0.0; memo = ""; executedAt = tExec
+
+-- | Test 8: Multiple transfers accumulate.
+testMultipleTransfers : Script ()
+testMultipleTransfers = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let t1 = time (date 2026 Apr 1) 12 0 0
+  let t2 = time (date 2026 Apr 2) 12 0 0
+  let t3 = time (date 2026 Apr 3) 12 0 0
+  r1 <- submit alice do exerciseCmd paCid ExecutePreapprovedTransfer with amount = 30.0; memo = ""; executedAt = t1
+  r2 <- submit alice do exerciseCmd r1.preapprovalCid ExecutePreapprovedTransfer with amount = 25.0; memo = ""; executedAt = t2
+  r3 <- submit alice do exerciseCmd r2.preapprovalCid ExecutePreapprovedTransfer with amount = 10.0; memo = ""; executedAt = t3
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "totalTransferred 65" (pa.totalTransferred == 65.0)
+  assertMsg "count 3" (pa.totalTransferCount == 3)
+  logs <- query @PreapprovedTransferLog alice
+  assertMsg "3 logs" (length logs == 3)
+
+-- ============================================================================
+-- UPDATE LIMIT / EXPIRY
+-- ============================================================================
+
+-- | Test 9: UpdateLimit by receiver.
+testUpdateLimit : Script ()
+testUpdateLimit = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tUpd = time (date 2026 Apr 1) 10 0 0
+  updatedCid <- submit bob do
+    exerciseCmd paCid UpdateLimit with
+      newMaxAmount = 500.0
+      updatedAt = tUpd
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "Limit updated to 500" (pa.maxAmountPerTransfer == 500.0)
+
+-- | Test 10: UpdateLimit rejects zero amount.
+testUpdateLimit_RejectsZero : Script ()
+testUpdateLimit_RejectsZero = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tUpd = time (date 2026 Apr 1) 10 0 0
+  submitMustFail bob do
+    exerciseCmd paCid UpdateLimit with
+      newMaxAmount = 0.0
+      updatedAt = tUpd
+
+-- | Test 11: UpdateExpiry by receiver.
+testUpdateExpiry : Script ()
+testUpdateExpiry = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tUpd = time (date 2026 Apr 1) 10 0 0
+  let tNewExp = time (date 2027 Dec 31) 23 59 59
+  updatedCid <- submit bob do
+    exerciseCmd paCid UpdateExpiry with
+      newExpiresAt = tNewExp
+      updatedAt = tUpd
+  preapprovals <- query @TransferPreapproval alice
+  let (_, pa) = head preapprovals
+  assertMsg "Expiry updated" (pa.expiresAt == tNewExp)
+
+-- | Test 12: UpdateExpiry rejects past dates.
+testUpdateExpiry_RejectsPast : Script ()
+testUpdateExpiry_RejectsPast = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tUpd = time (date 2026 Apr 1) 10 0 0
+  let tPast = time (date 2026 Mar 1) 10 0 0
+  submitMustFail bob do
+    exerciseCmd paCid UpdateExpiry with
+      newExpiresAt = tPast
+      updatedAt = tUpd
+
+-- ============================================================================
+-- DEACTIVATE / REACTIVATE
+-- ============================================================================
+
+-- | Test 13: Deactivate then reactivate.
+testDeactivateReactivate : Script ()
+testDeactivateReactivate = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  deactCid <- submit bob do exerciseCmd paCid DeactivatePreapproval
+  paDeact <- query @TransferPreapproval alice
+  let (_, pa1) = head paDeact
+  assertMsg "Not active" (not pa1.isActive)
+  let tReact = time (date 2026 Apr 1) 10 0 0
+  reactCid <- submit bob do
+    exerciseCmd deactCid ReactivatePreapproval with reactivatedAt = tReact
+  paReact <- query @TransferPreapproval alice
+  let (_, pa2) = head paReact
+  assertMsg "Active again" pa2.isActive
+
+-- | Test 14: Cannot deactivate already-inactive preapproval.
+testDeactivate_RejectsInactive : Script ()
+testDeactivate_RejectsInactive = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  deactCid <- submit bob do exerciseCmd paCid DeactivatePreapproval
+  submitMustFail bob do exerciseCmd deactCid DeactivatePreapproval
+
+-- ============================================================================
+-- REVOKE
+-- ============================================================================
+
+-- | Test 15: RevokePreapproval by receiver archives the contract.
+testRevokeByReceiver : Script ()
+testRevokeByReceiver = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  submit bob do exerciseCmd paCid RevokePreapproval
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Contract archived" (length preapprovals == 0)
+
+-- | Test 16: SenderRevokePreapproval by sender archives.
+testRevokeBySender : Script ()
+testRevokeBySender = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  submit alice do exerciseCmd paCid SenderRevokePreapproval
+  preapprovals <- query @TransferPreapproval alice
+  assertMsg "Contract archived" (length preapprovals == 0)
+
+-- ============================================================================
+-- CAN TRANSFER (nonconsuming)
+-- ============================================================================
+
+-- | Test 17: CanTransfer returns True for valid request.
+testCanTransfer_Valid : Script ()
+testCanTransfer_Valid = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tCheck = time (date 2026 Apr 1) 10 0 0
+  result <- submit alice do
+    exerciseCmd paCid CanTransfer with amount = 50.0; checkAt = tCheck
+  assertMsg "Should return True" result
+
+-- | Test 18: CanTransfer returns False for over-limit.
+testCanTransfer_OverLimit : Script ()
+testCanTransfer_OverLimit = script do
+  (alice, bob, roil, t0, tExp) <- setup
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tCheck = time (date 2026 Apr 1) 10 0 0
+  result <- submit alice do
+    exerciseCmd paCid CanTransfer with amount = 200.0; checkAt = tCheck
+  assertMsg "Should return False" (not result)
+
+-- | Test 19: CanTransfer returns False after expiry.
+testCanTransfer_AfterExpiry : Script ()
+testCanTransfer_AfterExpiry = script do
+  (alice, bob, roil, t0, _) <- setup
+  let tExp = time (date 2026 Apr 1) 10 0 0
+  paCid <- makePreapproval alice bob roil t0 tExp 100.0
+  let tAfter = time (date 2026 Apr 2) 10 0 0
+  result <- submit alice do
+    exerciseCmd paCid CanTransfer with amount = 50.0; checkAt = tAfter
+  assertMsg "Should return False" (not result)
