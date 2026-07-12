@@ -1,4 +1,4 @@
--- | Tests for Portfolio and Rebalance contracts
+﻿-- | Tests for Portfolio and Rebalance contracts
 module TestPortfolio where
 
 import Daml.Script
@@ -12,10 +12,21 @@ import Portfolio
 import DCA
 import RewardTracker
 import qualified FeaturedApp
+import qualified Governance
 
 -- | Helper: create test asset IDs
 mkAssetId : Party -> Text -> AssetId
 mkAssetId admin symbol = AssetId with symbol; admin
+
+-- | Helper: create a default RoilConfig with a generous cap so the existing
+-- SyncHoldings tests, which use sample value-CC totals well under 10k,
+-- continue to pass. Cap-binding behaviour is exercised in a dedicated test.
+mkConfig : Party -> Time -> Script (ContractId Governance.RoilConfig)
+mkConfig platform now = submit platform do
+  createCmd Governance.RoilConfig with
+    platform
+    maxPortfolioCC = 10000.0
+    updatedAt = now
 
 -- | Helper: record N transactions (top-level to avoid local recursion)
 recordTxs : Party -> ContractId RewardTracker -> Int -> Script (ContractId RewardTracker)
@@ -57,6 +68,9 @@ testPortfolioLifecycle = script do
       triggerMode = DriftThreshold 5.0
       now = time (date 2026 Mar 15) 09 0 0
 
+  -- 2b. Set up RoilConfig for the platform (cap enforcement)
+  configCid <- mkConfig platform (time (date 2026 Mar 15) 09 0 0)
+
   -- 3. Platform syncs holdings (simulating on-chain balance query)
   portfolioCid <- submit platform do
     exerciseCmd portfolioCid SyncHoldings with
@@ -65,6 +79,7 @@ testPortfolioLifecycle = script do
         , Holding usdcx 250.0  250.0
         , Holding cbtc  0.5    250.0
         ]
+      configCid = Some configCid
 
   -- 4. Check drift
   drift <- submit platform do
@@ -80,6 +95,7 @@ testPortfolioLifecycle = script do
         , Holding usdcx 150.0  150.0    -- 15% vs target 35% = 20% drift
         , Holding cbtc  0.5    250.0    -- 25% vs target 25% = 0% drift
         ]
+      configCid = Some configCid
 
   -- 6. Initiate rebalance (drift > 5% threshold)
   result <- submit platform do
@@ -398,7 +414,7 @@ testFeaturedApp = script do
 
   pure ()
 
--- | Test: Deactivate → rebalance fails → Reactivate → rebalance succeeds
+-- | Test: Deactivate â†’ rebalance fails â†’ Reactivate â†’ rebalance succeeds
 testDeactivateReactivate : Script ()
 testDeactivateReactivate = script do
   platform <- allocateParty "Platform"
@@ -408,7 +424,7 @@ testDeactivateReactivate = script do
   let cc    = mkAssetId tokenAdmin "CC"
   let usdcx = mkAssetId tokenAdmin "USDCx"
 
-  -- Create portfolio (proposal → accept)
+  -- Create portfolio (proposal â†’ accept)
   proposalCid <- submit platform do
     createCmd PortfolioProposal with
       platform
@@ -423,6 +439,8 @@ testDeactivateReactivate = script do
       triggerMode = Manual
       now = time (date 2026 Mar 15) 09 0 0
 
+  configCid <- mkConfig platform (time (date 2026 Mar 15) 09 0 0)
+
   -- Sync holdings with drift to allow rebalance
   portfolioCid <- submit platform do
     exerciseCmd portfolioCid SyncHoldings with
@@ -430,12 +448,13 @@ testDeactivateReactivate = script do
         [ Holding cc    2000.0 800.0    -- 80% vs target 50%
         , Holding usdcx 200.0  200.0    -- 20% vs target 50%
         ]
+      configCid = Some configCid
 
   -- Deactivate the portfolio
   portfolioCid <- submit alice do
     exerciseCmd portfolioCid DeactivatePortfolio
 
-  -- Try to InitiateRebalance → should fail (isActive check)
+  -- Try to InitiateRebalance â†’ should fail (isActive check)
   submitMustFail platform do
     exerciseCmd portfolioCid InitiateRebalance with
       requestedAt = time (date 2026 Mar 15) 10 0 0
@@ -444,7 +463,7 @@ testDeactivateReactivate = script do
   portfolioCid <- submit alice do
     exerciseCmd portfolioCid ActivatePortfolio
 
-  -- InitiateRebalance → should succeed
+  -- InitiateRebalance â†’ should succeed
   result <- submit platform do
     exerciseCmd portfolioCid InitiateRebalance with
       requestedAt = time (date 2026 Mar 15) 10 5 0
@@ -476,6 +495,8 @@ testFailRebalance = script do
       triggerMode = Manual
       now = time (date 2026 Mar 15) 10 0 0
 
+  configCid <- mkConfig platform (time (date 2026 Mar 15) 10 0 0)
+
   -- Sync holdings with drift
   portfolioCid <- submit platform do
     exerciseCmd portfolioCid SyncHoldings with
@@ -483,6 +504,7 @@ testFailRebalance = script do
         [ Holding cc    3000.0 900.0    -- 90% vs target 60%
         , Holding usdcx 100.0  100.0    -- 10% vs target 40%
         ]
+      configCid = Some configCid
 
   -- Initiate rebalance
   result <- submit platform do
@@ -527,6 +549,8 @@ testBelowThresholdRebalance = script do
       triggerMode = DriftThreshold 10.0
       now = time (date 2026 Mar 15) 10 0 0
 
+  configCid <- mkConfig platform (time (date 2026 Mar 15) 10 0 0)
+
   -- Sync holdings that create only 2% drift (below threshold of 10%)
   portfolioCid <- submit platform do
     exerciseCmd portfolioCid SyncHoldings with
@@ -534,8 +558,9 @@ testBelowThresholdRebalance = script do
         [ Holding cc    1000.0 510.0    -- 51% vs target 50% = 1% drift
         , Holding usdcx 490.0  490.0    -- 49% vs target 50% = 1% drift
         ]
+      configCid = Some configCid
 
-  -- Try InitiateRebalance → should fail (drift below threshold)
+  -- Try InitiateRebalance â†’ should fail (drift below threshold)
   submitMustFail platform do
     exerciseCmd portfolioCid InitiateRebalance with
       requestedAt = time (date 2026 Mar 15) 12 0 0
@@ -629,7 +654,7 @@ testReferralSystem = script do
       referrerBonusPct = 10.0
       createdAt = time (date 2026 Mar 15) 10 0 0
 
-  -- Exercise CreditReferrer → creates ReferralCredit
+  -- Exercise CreditReferrer â†’ creates ReferralCredit
   creditCid <- submit platform do
     exerciseCmd referralCid CreditReferrer with
       refereeTxValue = 500.0
@@ -671,7 +696,7 @@ testNegativeTargetRejection = script do
       platform
       user = alice
 
-  -- Try to create portfolio with negative targetPct → should fail
+  -- Try to create portfolio with negative targetPct â†’ should fail
   submitMustFail alice do
     exerciseCmd proposalCid AcceptProposal with
       targets =
@@ -770,7 +795,7 @@ testDuplicateAssetRejection = script do
       platform
       user = alice
 
-  -- Try to create portfolio with duplicate assets → should fail
+  -- Try to create portfolio with duplicate assets â†’ should fail
   submitMustFail alice do
     exerciseCmd proposalCid AcceptProposal with
       targets =
@@ -782,7 +807,7 @@ testDuplicateAssetRejection = script do
 
   pure ()
 
--- | Test: UpdateTriggerMode — change from Manual to DriftThreshold
+-- | Test: UpdateTriggerMode â€” change from Manual to DriftThreshold
 testUpdateTriggerMode : Script ()
 testUpdateTriggerMode = script do
   platform <- allocateParty "Platform"
@@ -818,7 +843,7 @@ testUpdateTriggerMode = script do
 
   pure ()
 
--- | Test: UpdateMetadata — add metadata and verify via query
+-- | Test: UpdateMetadata â€” add metadata and verify via query
 testUpdateMetadata : Script ()
 testUpdateMetadata = script do
   platform <- allocateParty "Platform"
@@ -879,7 +904,7 @@ testRewardSubThresholdReject = script do
       consecutiveMonths = 0
       totalRewardsEarned = 0.0
 
-  -- RecordTx with txValue (5.0) < txMinValue (10.0) → should fail
+  -- RecordTx with txValue (5.0) < txMinValue (10.0) â†’ should fail
   submitMustFail platform do
     exerciseCmd trackerCid RecordTx with
       txMinValue = 10.0
@@ -911,7 +936,7 @@ testRewardExactThreshold = script do
       consecutiveMonths = 0
       totalRewardsEarned = 0.0
 
-  -- RecordTx with txValue == txMinValue (exactly 10.0) → should succeed
+  -- RecordTx with txValue == txMinValue (exactly 10.0) â†’ should succeed
   trackerCid <- submit platform do
     exerciseCmd trackerCid RecordTx with
       txMinValue = 10.0
@@ -925,7 +950,7 @@ testRewardExactThreshold = script do
 
   pure ()
 
--- | Test: DCA UpdateFrequency — change from Weekly to Daily
+-- | Test: DCA UpdateFrequency â€” change from Weekly to Daily
 testDCAUpdateFrequency : Script ()
 testDCAUpdateFrequency = script do
   platform <- allocateParty "Platform"
@@ -966,7 +991,7 @@ testDCAUpdateFrequency = script do
 
   pure ()
 
--- | Test: DCA pause → resume → execute (full cycle)
+-- | Test: DCA pause â†’ resume â†’ execute (full cycle)
 testDCAResumeAfterPause : Script ()
 testDCAResumeAfterPause = script do
   platform <- allocateParty "Platform"
@@ -1019,7 +1044,7 @@ testDCAResumeAfterPause = script do
 
   pure ()
 
--- | Test: FeaturedApp activity types via RecordActivity — Rebalance, DCAExecution, CompoundExecution
+-- | Test: FeaturedApp activity types via RecordActivity â€” Rebalance, DCAExecution, CompoundExecution
 -- Note: The convenience wrappers (RecordRebalanceActivity, RecordDCAActivity, RecordCompoundActivity)
 -- use `exercise self RecordActivity` inside a consuming choice, which causes a double-consumption
 -- error. This test verifies the underlying RecordActivity works for all activity types.
@@ -1088,7 +1113,7 @@ testFeaturedAppConvenienceWrappers = script do
 
   pure ()
 
--- | Test: ActivityMarker creation — verify ActivityMarker contract created after RecordActivity
+-- | Test: ActivityMarker creation â€” verify ActivityMarker contract created after RecordActivity
 testActivityMarkerCreation : Script ()
 testActivityMarkerCreation = script do
   platform <- allocateParty "Platform"
@@ -1137,5 +1162,109 @@ testActivityMarkerCreation = script do
 
   markers <- query @FeaturedApp.ActivityMarker platform
   assertMsg "Should have 2 ActivityMarkers" (length markers == 2)
+
+  pure ()
+
+
+-- | Test: RoilConfig.maxPortfolioCC cap blocks SyncHoldings that would push
+-- the portfolio above the limit, even if every other invariant is satisfied.
+-- The cap can be raised via UpdateMaxPortfolioCC and the same SyncHoldings
+-- then succeeds â€” proving the config is truly mutable end-to-end.
+testRoilConfigCap : Script ()
+testRoilConfigCap = script do
+  platform   <- allocateParty "Platform"
+  alice      <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  proposalCid <- submit platform do
+    createCmd PortfolioProposal with
+      platform
+      user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 50.0
+        ]
+      triggerMode = Manual
+      now = time (date 2026 May 19) 12 0 0
+
+  -- Phase-1 cap: 3500 CC (~$525 at $0.15/CC)
+  configCid <- submit platform do
+    createCmd Governance.RoilConfig with
+      platform
+      maxPortfolioCC = 3500.0
+      updatedAt = time (date 2026 May 19) 12 0 0
+
+  -- SyncHoldings totalling 4000 CC must fail under the cap.
+  submitMustFail platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    10000.0 2000.0
+        , Holding usdcx 2000.0  2000.0
+        ]
+      configCid = Some configCid
+
+  -- Lift the cap to 5000 CC and retry â€” should now succeed.
+  configCid <- submit platform do
+    exerciseCmd configCid Governance.UpdateMaxPortfolioCC with
+      newMax = 5000.0
+      changedAt = time (date 2026 May 19) 12 30 0
+
+  _ <- submit platform do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    10000.0 2000.0
+        , Holding usdcx 2000.0  2000.0
+        ]
+      configCid = Some configCid
+
+  pure ()
+
+-- | Test: SyncHoldings fails if the config belongs to a different platform.
+-- Prevents a malicious or buggy caller from passing some other party's
+-- RoilConfig (which might be more permissive) to bypass the cap.
+testRoilConfigPlatformMismatch : Script ()
+testRoilConfigPlatformMismatch = script do
+  platformA  <- allocateParty "PlatformA"
+  platformB  <- allocateParty "PlatformB"
+  alice      <- allocateParty "Alice"
+  tokenAdmin <- allocateParty "TokenAdmin"
+
+  let cc    = mkAssetId tokenAdmin "CC"
+  let usdcx = mkAssetId tokenAdmin "USDCx"
+
+  proposalCid <- submit platformA do
+    createCmd PortfolioProposal with
+      platform = platformA
+      user = alice
+
+  portfolioCid <- submit alice do
+    exerciseCmd proposalCid AcceptProposal with
+      targets =
+        [ TargetAllocation cc    50.0
+        , TargetAllocation usdcx 50.0
+        ]
+      triggerMode = Manual
+      now = time (date 2026 May 19) 12 0 0
+
+  -- Config belongs to platformB, not platformA
+  badConfigCid <- submit platformB do
+    createCmd Governance.RoilConfig with
+      platform = platformB
+      maxPortfolioCC = 999999.0
+      updatedAt = time (date 2026 May 19) 12 0 0
+
+  submitMustFail platformA do
+    exerciseCmd portfolioCid SyncHoldings with
+      newHoldings =
+        [ Holding cc    100.0 50.0
+        , Holding usdcx 50.0  50.0
+        ]
+      configCid = Some badConfigCid
 
   pure ()

@@ -480,8 +480,13 @@ export class CompoundEngine {
    * 1. Check if compound frequency period has elapsed
    * 2. If due, execute compound
    */
-  async checkAndCompoundAll(): Promise<void> {
+  async checkAndCompoundAll(opts?: { roundAware?: boolean }): Promise<void> {
     const now = Date.now();
+    // Lazy-import keeps compound.ts independent of round-scheduler at the
+    // module level; the helper is a pure function with no side effects.
+    const { currentRoundSlot, slotForContractId, slotsSince, CATCHUP_WINDOW_SLOTS } =
+      await import('./round-scheduler.js');
+    const nowSlot = currentRoundSlot(now);
 
     for (const [party, cfg] of compoundConfigs.entries()) {
       if (!cfg.enabled) continue;
@@ -491,6 +496,21 @@ export class CompoundEngine {
 
       if (now - lastTime < intervalMs) {
         continue; // Not due yet
+      }
+
+      // Round-aware filter — same rationale as DCA (see
+      // engine/round-scheduler.ts header comment). Compound traffic is
+      // operator-triggered by yield events; without this filter all
+      // compounds bunch into the same poll cycle and waste reward share.
+      // First-ever compound bypasses the slot lock so a brand-new config
+      // doesn't have to wait up to 24h before its first execution.
+      if (opts?.roundAware) {
+        const firstExecution = lastTime === 0;
+        const inSlot = slotForContractId(party) === nowSlot;
+        const overdue = lastTime > 0 && slotsSince(lastTime, now) > CATCHUP_WINDOW_SLOTS;
+        if (!firstExecution && !inSlot && !overdue) {
+          continue;
+        }
       }
 
       try {

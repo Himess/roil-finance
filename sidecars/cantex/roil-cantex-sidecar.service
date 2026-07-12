@@ -1,0 +1,33 @@
+[Unit]
+Description=Roil Cantex Sidecar (FastAPI wrapper around cantex_sdk)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=roil
+Group=roil
+WorkingDirectory=/opt/roil-cantex-sidecar
+EnvironmentFile=/opt/roil-cantex-sidecar/.env
+ExecStart=/opt/roil-cantex-sidecar/venv/bin/python /opt/roil-cantex-sidecar/app.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=roil-cantex-sidecar
+
+# Tighten the blast radius: the sidecar only needs to read its own dir,
+# talk to api.cantex.io over HTTPS, and bind 127.0.0.1:6200. No raw
+# network from within the unit, no /etc writes, no SUID.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/roil-cantex-sidecar
+# Allow connecting outbound; bind only to localhost (enforced in app.py).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+MemoryMax=512M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

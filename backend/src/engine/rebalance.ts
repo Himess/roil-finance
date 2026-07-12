@@ -7,6 +7,7 @@ import { rewardsEngine } from './rewards.js';
 import { logger } from '../monitoring/logger.js';
 import { recordSnapshot } from '../services/performance-tracker.js';
 import { tokenTransferService } from '../services/token-transfer.js';
+import { getRoilConfigCid } from '../services/roil-config.js';
 import {
   decimalToNumber,
   numberToDecimal,
@@ -568,6 +569,13 @@ export class RebalanceEngine {
         // Fallback to computed holdings if query fails
         logger.warn('[rebalance] Failed to query real holdings, using computed values');
       }
+      // Daml `SyncHoldings` enforces the platform cap by fetching RoilConfig
+      // and rejecting holdings whose summed valueCc exceeds maxPortfolioCC.
+      // The field is `Optional` at the Daml level for upgrade compatibility
+      // (v0.3.3 → v0.3.4) but the backend always passes `Some` so the cap
+      // check actually runs; passing `None` triggers an explicit abort in
+      // the choice body.
+      const configCid = await getRoilConfigCid();
       await ledger.exerciseAs(
         TEMPLATES.Portfolio,
         newPortfolioCid,
@@ -578,6 +586,9 @@ export class RebalanceEngine {
             amount: numberToDecimal(h.amount),
             valueCc: numberToDecimal(h.valueCc),
           })),
+          // JSON Ledger API encoding: `Optional T` → null | T.
+          // Always Some (cap-check enforced).
+          configCid: configCid,
         },
         platform,
       );

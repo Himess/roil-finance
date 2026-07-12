@@ -152,10 +152,18 @@ export class FeaturedAppEngine {
    * Record a platform activity for Featured App Rewards.
    *
    * Exercises RecordActivity on the FeaturedAppConfig contract, which:
-   * 1. Increments the totalActivities counter
-   * 2. Creates an ActivityRecord visible to the user
-   * 3. (On real network) Would create an AppRewardCoupon via
-   *    FeaturedAppRight_CreateActivityMarker
+   * 1. Increments the totalActivities counter (local audit)
+   * 2. Creates an ActivityRecord visible to the user (local audit)
+   * 3. Creates an ActivityMarker on the platform (local audit)
+   *
+   * Note: as of CIP-0104 (2026-02-12) app rewards are attributed by
+   * envelope traffic, not by markers. The on-Splice
+   * `FeaturedAppRight_CreateActivityMarker` call previously performed by
+   * `RecordActivity` was deliberately removed because it earned zero
+   * additional reward while burning Canton traffic. The Daml-side
+   * counters here remain useful for backend dashboards and reward-tier
+   * accounting, even though they no longer drive on-network reward
+   * computation.
    */
   async recordActivity(
     user: string,

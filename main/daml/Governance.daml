@@ -154,12 +154,53 @@ template RoilAdmin
       do
         pure (not isPaused && not isFrozen)
 
+-- | Mutable platform configuration for phase-ramp caps.
+--
+-- Lives separately from RoilAdmin because the operational pause/freeze
+-- controls in RoilAdmin should be rare and high-signal; the numerical caps
+-- here will be tweaked many times during phased rollout (100 → 500 → 1K →
+-- 5K users). Putting them in their own template means a cap update is just
+-- a choice exercise — no DAR upgrade, no audit blast radius on the
+-- operational controls.
+--
+-- The cap is in CC (Canton Coin), not USD, because every holding already
+-- reports `valueCc` on-ledger; we don't need an off-chain oracle to enforce
+-- it. CC→USD exposure is acceptable (CC pumps 2x → effective USD cap halves
+-- → bug containment still works, user just allowed to hold less).
+template RoilConfig
+  with
+    platform       : Party
+    maxPortfolioCC : Decimal  -- per-portfolio cap on sum of holdings.valueCc
+    updatedAt      : Time
+  where
+    signatory platform
+
+    ensure maxPortfolioCC > 0.0
+
+    -- Update the per-portfolio CC cap. Each call appends an audit log.
+    choice UpdateMaxPortfolioCC : ContractId RoilConfig
+      with
+        newMax    : Decimal
+        changedAt : Time
+      controller platform
+      do
+        assertMsg "Max must be positive" (newMax > 0.0)
+        _ <- create GovernanceAuditLog with
+          platform
+          action = "CONFIG_UPDATE"
+          reason =
+            "maxPortfolioCC: " <> show maxPortfolioCC <> " -> " <> show newMax
+          timestamp = changedAt
+        create this with
+          maxPortfolioCC = newMax
+          updatedAt = changedAt
+
 -- | Immutable audit log for governance actions.
 -- Every admin action creates a permanent record.
 template GovernanceAuditLog
   with
     platform  : Party
-    action    : Text     -- e.g., "EMERGENCY_FREEZE", "UNFREEZE", "FEE_UPDATE"
+    action    : Text     -- e.g., "EMERGENCY_FREEZE", "UNFREEZE", "FEE_UPDATE", "CONFIG_UPDATE"
     reason    : Text
     timestamp : Time
   where

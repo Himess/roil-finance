@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "roil-cantex-sidecar"
+version = "0.1.0"
+description = "FastAPI sidecar wrapping cantex_sdk for the Roil backend"
+requires-python = ">=3.11"
+dependencies = [
+    "cantex-sdk>=0.4.1",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "pydantic>=2.9.0",
+]

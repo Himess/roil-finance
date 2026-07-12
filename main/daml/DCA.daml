@@ -38,7 +38,14 @@ template DCASchedule
   where
     signatory platform
     observer user
-    ensure amountPerBuy > 0.0 && sourceAsset /= targetAsset
+    -- Hourly is forbidden at the ledger level. Reason: Cantex's 10 CC
+    -- minimum ticket (~$1.50) combined with ~$0.10 per-swap network fee
+    -- makes hourly DCA uneconomic — at $1.50/hr the user would pay ~$72/mo
+    -- in traffic costs alone. The cap is here, not just the frontend, so a
+    -- backend bug or a misbehaving client cannot enrol a user into one.
+    ensure amountPerBuy > 0.0
+        && sourceAsset /= targetAsset
+        && frequency /= Hourly
 
     -- Note: Contract keys removed (not supported in Daml-LF 3.x)
 

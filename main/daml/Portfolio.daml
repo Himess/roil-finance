@@ -10,6 +10,7 @@
 module Portfolio where
 
 import Types
+import Governance (RoilConfig)
 import DA.TextMap (TextMap, empty)
 
 -- | Result of InitiateRebalance choice
@@ -114,17 +115,41 @@ template Portfolio
       do
         create this with triggerMode = newMode
 
-    -- Platform updates holdings after syncing with on-chain balances
-    -- This is called by the backend after querying actual token balances
+    -- Platform updates holdings after syncing with on-chain balances.
+    --
+    -- Cap enforcement: the backend must pass the platform's RoilConfig
+    -- contract so this choice can read the current `maxPortfolioCC` from
+    -- the ledger itself, rather than trusting an off-chain number. The
+    -- choice fails if the new holdings would push the portfolio above the
+    -- cap. This bounds blast radius if there is a backend bug.
+    --
+    -- `configCid` is `Optional` for Daml smart-contract upgrade
+    -- compatibility (v0.3.3 → v0.3.4 added the field; old callers passing
+    -- nothing must still type-check at the upgrade boundary). At runtime
+    -- a `None` is treated as a backend bug and rejected — the v0.3.4
+    -- backend always supplies a contract id. This preserves the cap
+    -- guarantee while still letting upgrades land cleanly.
     choice SyncHoldings : ContractId Portfolio
       with
         newHoldings : [Holding]
+        configCid   : Optional (ContractId RoilConfig)
       controller platform
       do
+        cidActive <- case configCid of
+          Some c -> pure c
+          None ->
+            abort "SyncHoldings requires configCid (v0.3.4+); upgrade your backend"
+        cfg <- fetch cidActive
+        assertMsg "Config platform mismatch" (cfg.platform == platform)
         assertMsg "Holdings must not be empty (at least 1 holding required)" (not (null newHoldings))
         assertMsg "All holding amounts must be >= 0 (no negative holdings)" (all (\h -> h.amount >= 0.0) newHoldings)
         assertMsg "All holding valueCc must be >= 0" (all (\h -> h.valueCc >= 0.0) newHoldings)
         assertMsg "No duplicate assets allowed in holdings" (not (hasDuplicateHoldingAssets newHoldings))
+        let totalCc = sum (map (\h -> h.valueCc) newHoldings)
+        assertMsg
+          ("Portfolio value " <> show totalCc <>
+            " CC exceeds platform cap " <> show cfg.maxPortfolioCC <> " CC")
+          (totalCc <= cfg.maxPortfolioCC)
         create this with holdings = newHoldings
 
     -- Check if rebalance is needed based on current drift

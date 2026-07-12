@@ -478,3 +478,73 @@ adminRouter.get('/audit-log', (req: Request, res: Response) => {
     data: adminState.auditLog.slice(0, limit),
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/admin/cantex/withdraw
+//
+// Pull liquidity *out* of the Cantex account to a Daml party (typically the
+// validator wallet). Admin-gated because it moves real funds; the receiver
+// is supplied per call so we don't have to bake a destination party into
+// config, but in production this should be reviewed against an allow-list.
+//
+// Body:
+//   { symbol: "CC" | "USDCx" | "CBTC" | ...,
+//     amount: "10.0",
+//     receiver: "validator-1::1220...",
+//     memo: "optional free text" }
+//
+// Returns the sidecar's transfer envelope (`transferId` + raw response).
+// Failures are propagated as 5xx; the call is never auto-retried inside
+// the sidecar HTTP client (a retry could double-spend if the transaction
+// was already submitted on-chain).
+// ---------------------------------------------------------------------------
+
+adminRouter.post('/cantex/withdraw', async (req: Request, res: Response) => {
+  if (req.actAs !== undefined && !req.actAs?.includes(config.platformParty) && req.partyId !== config.platformParty) {
+    return res.status(403).json({ error: 'Forbidden: admin access required' });
+  }
+
+  if (!config.cantexSidecarUrl) {
+    return res
+      .status(503)
+      .json({ success: false, error: 'Cantex sidecar not configured (mock mode)' });
+  }
+
+  const schema = z.object({
+    symbol: z.string().min(1).max(16),
+    amount: z.string().regex(/^\d+(\.\d+)?$/, 'amount must be a positive decimal string'),
+    receiver: z.string().min(1),
+    memo: z.string().max(256).optional(),
+  });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ success: false, error: parsed.error.format() });
+  }
+
+  const { CantexSidecarClient } = await import('../cantex-sidecar.js');
+  const sidecar = new CantexSidecarClient();
+  try {
+    const result = await sidecar.transfer({
+      symbol: parsed.data.symbol,
+      amount: Number(parsed.data.amount),
+      receiver: parsed.data.receiver,
+      memo: parsed.data.memo ?? '',
+    });
+    logger.info('Admin action', {
+      action: 'CANTEX_WITHDRAW',
+      party: req.actAs?.[0] || req.partyId,
+      timestamp: new Date().toISOString(),
+      details: {
+        symbol: parsed.data.symbol,
+        amount: parsed.data.amount,
+        receiver: parsed.data.receiver,
+        transferId: result.transferId,
+      },
+    });
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error('Cantex withdraw failed', { error: message, body: parsed.data });
+    return res.status(502).json({ success: false, error: message });
+  }
+});

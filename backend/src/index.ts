@@ -135,7 +135,9 @@ cron.schedule('0 * * * *', async () => {
   logger.info('Running auto-compound check', { component: 'cron' });
 
   try {
-    await compoundEngine.checkAndCompoundAll();
+    // Round-aware spreads compound executions across Canton's 144 slots,
+    // matching the DCA path. See engine/round-scheduler.ts.
+    await compoundEngine.checkAndCompoundAll({ roundAware: true });
   } catch (err) {
     logger.error('Auto-compound error', {
       component: 'cron',

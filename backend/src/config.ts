@@ -95,13 +95,16 @@ export const config = {
   /** Allowed CORS origins (comma-separated). Used in non-localnet environments. */
   allowedOrigins: (process.env.ALLOWED_ORIGINS || 'http://localhost:5173').split(','),
 
-  // --- Cantex ---
+  // --- Cantex (via sidecar) ---
+  //
+  // Keys live in the sidecar's environment (sidecars/cantex/.env), not here.
+  // The backend reaches Cantex through HTTP calls to that sidecar.
 
-  /** Cantex operator key (Ed25519 hex) */
-  cantexOperatorKey: process.env.CANTEX_OPERATOR_KEY || '',
+  /** URL of the Roil Cantex sidecar (FastAPI). Empty string → mock mode. */
+  cantexSidecarUrl: process.env.CANTEX_SIDECAR_URL || '',
 
-  /** Cantex trading key (secp256k1 hex) */
-  cantexTradingKey: process.env.CANTEX_TRADING_KEY || '',
+  /** Shared secret sent as X-Sidecar-Auth header. Must match sidecar's SIDECAR_AUTH_TOKEN. */
+  cantexSidecarAuthToken: process.env.CANTEX_SIDECAR_AUTH_TOKEN || '',
 
   // --- Rebalance settings ---
   defaultDriftThreshold: 5.0,
@@ -198,6 +201,9 @@ export const TEMPLATES = {
   UserPreferences: `#${pkg}:Portfolio:UserPreferences`,
   PortfolioAuditLog: `#${pkg}:Portfolio:PortfolioAuditLog`,
   CompoundLog: `#${pkg}:Portfolio:CompoundLog`,
+  RoilAdmin: `#${pkg}:Governance:RoilAdmin`,
+  RoilConfig: `#${pkg}:Governance:RoilConfig`,
+  GovernanceAuditLog: `#${pkg}:Governance:GovernanceAuditLog`,
 } as const;
 
 // ---------------------------------------------------------------------------

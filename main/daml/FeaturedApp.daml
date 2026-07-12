@@ -1,18 +1,27 @@
--- | Canton Featured App Rewards integration — Splice DAR integrated.
--- Records platform activity for the Canton Network App Rewards program.
+-- | Canton Featured App Rewards integration.
 --
--- With Splice DARs:
--- 1. Holds a FeaturedAppRight contract (obtained from GSF registration)
--- 2. Exercises FeaturedAppRight_CreateActivityMarker on each activity
--- 3. Automatically generates AppRewardCoupons via Super Validator automation
+-- ⚠️ CIP-0104 (Traffic-Based Attribution, 2026-02-12) made
+-- `FeaturedAppRight_CreateActivityMarker` obsolete. App rewards are now
+-- computed automatically by the sequencer + mediator from each Roil
+-- transaction's envelope size — no markers needed, and creating them just
+-- burns Canton traffic for zero additional reward.
 --
--- Without FeaturedAppRight (tests or pre-registration):
--- Activity is recorded locally via ActivityMarker contracts.
+-- This module therefore:
+--   1. KEEPS local `ActivityRecord` + `ActivityMarker` for audit trail and
+--      backend dashboards — they are read by `/api/featured-app/activity`
+--      etc. and have no on-network cost beyond their own contract creation.
+--   2. NO LONGER exercises Splice `FeaturedAppRight_CreateActivityMarker`.
+--      The Splice import is removed; the `featuredAppRightCid` field is
+--      retained on `FeaturedAppConfig` because Splice may reuse it for
+--      future programs (e.g. CIP-0116 Featured App Staking).
+--   3. Keeps `activityWeight` as a payload field (it still affects local
+--      audit counters and downstream reward-tier logic), but no longer
+--      multiplies any on-Splice work.
 module FeaturedApp where
 
 import DA.List (take)
 import DA.Text qualified as T
-import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, FeaturedAppRight_CreateActivityMarker(..), AppRewardBeneficiary(..))
+import Splice.Api.FeaturedAppRightV1 (FeaturedAppRight, AppRewardBeneficiary(..))
 
 -- | Size of the in-contract dedup window for activityIds.
 -- Daml-LF 3.x removed contract keys, so we simulate uniqueness by keeping
@@ -22,9 +31,12 @@ recentActivityIdWindow : Int
 recentActivityIdWindow = 1000
 
 -- | Maximum allowed activityWeight per RecordActivity call.
--- Bounds the inner mapA loop exercising FeaturedAppRight_CreateActivityMarker —
--- an unbounded weight could exhaust the Canton engine step budget in a single
--- transaction. 100 is generous (a 100-leg rebalance is already extreme).
+--
+-- Historical reason: bounded the inner `mapA` that exercised
+-- `FeaturedAppRight_CreateActivityMarker` once per weight unit. That loop
+-- is gone now (CIP-0104 makes markers obsolete), but the cap is kept as a
+-- soft check on caller sanity — a "weight" of millions usually means a
+-- bug in the caller, not a 1M-leg rebalance.
 maxActivityWeight : Int
 maxActivityWeight = 100
 
@@ -136,16 +148,17 @@ template FeaturedAppConfig
           platform; user; activityType; activityId; description
           recordedAt = now
 
-        -- Exercise Splice FeaturedAppRight if registered (once per weight unit)
-        case featuredAppRightCid of
-          Some cid -> do
-            let exerciseOnce _ = do
-                  _ <- exercise cid FeaturedAppRight_CreateActivityMarker with
-                    beneficiaries = beneficiaries
-                  pure ()
-            mapA exerciseOnce [1 .. activityWeight]
-            pure ()
-          None -> pure ()
+        -- CIP-0104 (2026-02-12) replaced marker-based attribution with
+        -- envelope-traffic attribution. Roil's app-reward share is now
+        -- computed by sequencer + mediator automatically. We deliberately
+        -- do NOT exercise `FeaturedAppRight_CreateActivityMarker` here:
+        -- (1) it earns no extra reward, (2) it would burn Canton traffic
+        -- proportional to activityWeight (a 5-leg rebalance × marker call
+        -- = 5x the traffic for the same reward).
+        --
+        -- `featuredAppRightCid` is retained on the config because Splice
+        -- may reuse it for future programs (e.g. CIP-0116 staking) — when
+        -- that lands, replace this comment block with the new call.
 
         -- Local marker (always created for backend queries)
         markerCid <- create ActivityMarker with

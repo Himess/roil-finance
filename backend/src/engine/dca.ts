@@ -11,6 +11,12 @@ import {
   decimalMul,
 } from '../utils/decimal.js';
 import { checkFeeBudget } from './rebalance.js';
+import {
+  CATCHUP_WINDOW_SLOTS,
+  currentRoundSlot,
+  slotForContractId,
+  slotsSince,
+} from './round-scheduler.js';
 
 /** Platform fee rate applied to each swap output (e.g. 0.001 = 0.1%) */
 const PLATFORM_FEE_RATE = parseFloat(process.env.PLATFORM_FEE_RATE || '0.001');
@@ -176,10 +182,21 @@ export class DCAEngine {
    * 3. Exercise `CompleteDCAExecution` on the DCAExecution contract
    * 4. Record the TX in the reward tracker
    */
-  async executeDueSchedules(): Promise<{ executed: number; failed: number }> {
+  async executeDueSchedules(opts?: {
+    /**
+     * If set, only run schedules whose deterministic round-slot matches the
+     * current wall-clock slot. Spreads daily DCAs uniformly across the 144
+     * Canton rounds in a day so we don't clump traffic and hit the
+     * $1.50/tx CIP-0098 cap. Schedules that have been due for longer than
+     * `CATCHUP_WINDOW_SLOTS` rounds bypass the filter so a poll outage
+     * doesn't delay an execution into the next day.
+     */
+    roundAware?: boolean;
+  }): Promise<{ executed: number; failed: number }> {
     const platform = config.platformParty;
     let executed = 0;
     let failed = 0;
+    const nowSlot = currentRoundSlot();
 
     try {
       // Fetch all DCA schedules
@@ -236,6 +253,24 @@ export class DCAEngine {
 
         if (!isDue(payload, lastExecution)) {
           continue;
+        }
+
+        // Round-aware filter: only fire on this schedule's assigned slot,
+        // unless we're past the catch-up grace window (in which case force
+        // execution to avoid postponing into the next cadence period).
+        if (opts?.roundAware) {
+          const assignedSlot = slotForContractId(schedule.contractId);
+          const dueSlots = cachedTs ? slotsSince(cachedTs) : Infinity;
+          const isFirstExecution = !cachedTs;
+          const inSlot = assignedSlot === nowSlot;
+          const overdue = dueSlots >
+            // Period in slots: Daily≈144, Weekly≈1008, Monthly≈4320.
+            // First-ever execution always bypasses (don't wait up to a day
+            // before a brand-new daily schedule's first buy).
+            CATCHUP_WINDOW_SLOTS;
+          if (!isFirstExecution && !inSlot && !overdue) {
+            continue;
+          }
         }
 
         logger.info(

@@ -178,6 +178,40 @@ async function main(): Promise<void> {
   await ensureRewardTracker(bobParty, 'Bob');
 
   // -----------------------------------------------------------------------
+  // 4b. RoilConfig (phase-ramp caps)
+  // -----------------------------------------------------------------------
+  //
+  // Without this contract `Portfolio.SyncHoldings` would fail every call —
+  // the choice fetches RoilConfig from the ledger to enforce the cap. We
+  // create one with the Phase-1 default of 3500 CC (~$525 at $0.15/CC).
+  // The cap is mutable via `UpdateMaxPortfolioCC`; this script only seeds
+  // a starting value.
+
+  console.log('[4b/5] Creating RoilConfig contract...');
+
+  const existingConfigs = await ledger.query(TEMPLATES.RoilConfig, platformParty);
+  const platformConfigs = existingConfigs.filter(
+    (c) => (c.payload as Record<string, unknown>).platform === platformParty,
+  );
+
+  if (platformConfigs.length === 0) {
+    const cfgResult = await ledger.create(
+      TEMPLATES.RoilConfig,
+      {
+        platform: platformParty,
+        maxPortfolioCC: '3500.0',
+        updatedAt: new Date().toISOString(),
+      },
+      [platformParty],
+    );
+    const cfgCid = extractCreatedContractId(cfgResult);
+    contractIds['RoilConfig'] = cfgCid;
+    console.log(`  RoilConfig (maxPortfolioCC=3500.0): ${cfgCid}`);
+  } else {
+    console.log(`  RoilConfig: ${platformConfigs.length} already exist — skipping.`);
+  }
+
+  // -----------------------------------------------------------------------
   // 5. Summary
   // -----------------------------------------------------------------------
 

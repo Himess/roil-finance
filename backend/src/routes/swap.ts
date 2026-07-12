@@ -8,6 +8,8 @@ import {
 } from '../engine/treasury.js';
 import { priceOracle } from '../services/price-oracle.js';
 import { logger } from '../monitoring/logger.js';
+import { CantexSidecarClient } from '../cantex-sidecar.js';
+import { config } from '../config.js';
 import {
   decimalToNumber,
   numberToDecimal,
@@ -191,6 +193,98 @@ swapRouter.get('/history', async (req: Request, res: Response) => {
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ success: false, error: message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/swap/cantex-fees — live DEX fee breakdown for a hypothetical trade
+//
+// Used by the frontend SwapConfirmModal to render the real Cantex fee
+// breakdown (admin / liquidity / network) and the effective-fee % warning
+// without baking empirical estimates into the bundle. Returns USD figures
+// so the UI doesn't have to convert from buy-token amounts / CC.
+//
+// Soft-fails to a flat `{ available: false }` envelope when:
+//   - The sidecar URL is not configured (mock mode).
+//   - The pair is not routable on Cantex (e.g. cross-asset with no pool).
+//   - The sidecar is temporarily down.
+// In those cases the modal falls back to its empirical estimate, which is
+// good enough to keep the swap flow usable.
+// ---------------------------------------------------------------------------
+
+swapRouter.get('/cantex-fees', async (req: Request, res: Response) => {
+  const from = (req.query.from as string) || '';
+  const to = (req.query.to as string) || '';
+  const amount = (req.query.amount as string) || '';
+  if (!from || !to || !amount) {
+    return res
+      .status(400)
+      .json({ success: false, error: 'from, to and amount query params required' });
+  }
+  if (!config.cantexSidecarUrl) {
+    return res.json({ success: true, data: { available: false, reason: 'sidecar-not-configured' } });
+  }
+
+  try {
+    const sidecar = new CantexSidecarClient();
+    const quote = await sidecar.getQuote(from, to, Number(amount));
+
+    // Convert each fee to USD. Admin/liquidity are denominated in the BUY
+    // token; network fee is in CC. We use the existing price oracle so the
+    // numbers match what the rest of the UI shows (no double-pricing).
+    const buyPriceUsd = (await priceOracle.getPrice(to).catch(() => null))?.priceUsdcx ?? null;
+    const ccPriceUsd = (await priceOracle.getPrice('CC').catch(() => null))?.priceUsdcx ?? null;
+    if (buyPriceUsd === null || ccPriceUsd === null) {
+      return res.json({
+        success: true,
+        data: { available: false, reason: 'price-feed-missing' },
+      });
+    }
+
+    const adminUsd = quote.fees.amountAdmin * Number(buyPriceUsd);
+    const liquidityUsd = quote.fees.amountLiquidity * Number(buyPriceUsd);
+    const networkUsd = quote.fees.networkFee * Number(ccPriceUsd);
+    const tradeSizeUsd =
+      from === 'USDCx' || from === 'USDC'
+        ? Number(amount)
+        : Number(amount) * Number(
+            (await priceOracle.getPrice(from).catch(() => ({ priceUsdcx: 0 })))
+              .priceUsdcx,
+          );
+    const totalFeeUsd = adminUsd + liquidityUsd + networkUsd;
+    const effectiveFeePct =
+      tradeSizeUsd > 0 ? (totalFeeUsd / tradeSizeUsd) * 100 : null;
+
+    return res.json({
+      success: true,
+      data: {
+        available: true,
+        from,
+        to,
+        amount: Number(amount),
+        tradeSizeUsd,
+        adminFeeUsd: adminUsd,
+        liquidityFeeUsd: liquidityUsd,
+        networkFeeUsd: networkUsd,
+        totalFeeUsd,
+        effectiveFeePct,
+        estimatedOutputAmount: quote.returnedAmount,
+        estimatedOutputUsd: quote.returnedAmount * Number(buyPriceUsd),
+        estimatedTimeSeconds: quote.estimatedTimeSeconds,
+      },
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.warn('[swap] Cantex live quote failed, frontend will fall back', {
+      from,
+      to,
+      amount,
+      error: message,
+    });
+    return res.json({
+      success: true,
+      data: { available: false, reason: message },
+    });
   }
 });
 

@@ -1,0 +1,21 @@
+[Unit]
+Description=Roil — Splice TransferInstruction auto-accept loop
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/roil-transfer-accept
+EnvironmentFile=/opt/roil-transfer-accept/.env
+ExecStart=/usr/bin/python3 /opt/roil-transfer-accept/accept_loop.py
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=roil-transfer-accept
+MemoryMax=128M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

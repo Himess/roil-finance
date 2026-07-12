@@ -3,10 +3,43 @@
 ## [Unreleased]
 
 ### Planned
-- MainNet validator onboarding (target: 2026-04-20)
-- Featured App application submission (window: 2026-04-20 to 2026-05-04)
-- Dev Fund grant PR submission (post-MainNet)
-- Nightly Postgres `pg_dumpall` backup automation on MainNet
+- Featured App application resubmission (next window TBD by Canton Foundation)
+- Cantex TestNet sidecar bring-up (waiting on TestNet account creation)
+- Cantex operator/trading key rotation (production cutover prerequisite)
+- Real holdings → SyncHoldings(configCid) MainNet integration test
+- Dev Fund grant PR submission
+
+## [0.3.4] - 2026-05-20
+
+Cantex MainNet integration + Sprint 2 hardening — 6 items across Daml,
+backend, frontend, and ops. End-to-end on-chain swap validated against
+MainNet Cantex (10 CC → 1.491 USDCx, event `89a2e95d…`).
+
+### Added
+- **Daml:** `Governance.RoilConfig` template + `UpdateMaxPortfolioCC` choice. Mutable on-ledger cap (`maxPortfolioCC`, default 3500 CC ≈ $525) lets phase-ramp updates happen via a choice exercise — no DAR upgrade for cap tweaks. Audit log written on every update.
+- **Daml:** `Portfolio.SyncHoldings` now takes `configCid : ContractId RoilConfig` and `fetch`-es the cap on-ledger, asserting `sum(holdings.valueCc) <= maxPortfolioCC`. The same path also verifies `cfg.platform == platform`, so a malicious caller can't substitute a more-permissive config from another platform party.
+- **Daml:** New tests `testRoilConfigCap`, `testRoilConfigPlatformMismatch`, `testHourlyRejected`, `testUpdateToHourlyRejected`. Test count: 157 → **161**.
+- **Daml templates exported:** `RoilConfig`, `RoilAdmin`, `GovernanceAuditLog` are now in `backend/src/config.ts::TEMPLATES`.
+- **Backend:** `cantex.ts` → `cantex-sidecar.ts` HTTP client (replaces broken native TS port). All 13 callers (`engine/rebalance.ts`, `engine/dca.ts`, `engine/compound.ts`, `services/smart-router.ts`, `services/token-transfer.ts`, `services/price-oracle.ts`, `routes/market.ts`, etc.) keep their existing call sites — only `CantexClient` internals changed.
+- **Backend:** `engine/round-scheduler.ts` (new) — `currentRoundSlot()` / `slotForContractId()` (FNV-1a) / `slotsSince()` / `CATCHUP_WINDOW_SLOTS=4`. `dcaEngine.executeDueSchedules({ roundAware: true })` filters by slot so daily DCAs spread across the 144 Canton rounds per day. Triggered from `engine/trigger-manager.ts`. 14 new unit tests.
+- **Backend:** `services/roil-config.ts` (new) — fetches and caches the platform's `RoilConfig` contract ID (5-min TTL). `engine/rebalance.ts::SyncHoldings` calls now pass `configCid`.
+- **Backend:** `scripts/init-ledger.ts` step `[4b/5]` seeds `RoilConfig (maxPortfolioCC=3500.0)` on first run.
+- **Sidecar:** `sidecars/cantex/` — FastAPI service wrapping `cantex_sdk` 0.4.1 with `/health` / `/balance` / `/pools` / `/quote` / `/swap` (WebSocket-confirmed) endpoints. Symbol-based API (`CC`, `USDCx`, etc.); the sidecar resolves Daml `InstrumentId`s internally. systemd unit (`roil-cantex-sidecar.service`) with `User=roil`, `PrivateTmp`, `ProtectSystem=strict`, `MemoryMax=512M`. Idempotent deploy script (`deploy.sh`). Deployed and live on MainNet validator VPS (`159.195.76.220:6200`).
+- **Frontend:** `SwapConfirmModal.tsx` shows admin / liquidity / network fee breakdown, computes effective fee % across the full cost stack, and renders an orange `role="alert"` banner when effective fee > 5% with a "batch into a larger swap" hint. Soft nudge — no hard block. `NewDCA.tsx` drops `Hourly` from the frequency UI (Daml rejects it anyway).
+
+### Changed
+- **Daml:** `FeaturedApp.RecordActivity` no longer exercises `FeaturedAppRight_CreateActivityMarker`. CIP-0104 (2026-02-12) replaced marker-based attribution with envelope-based traffic, so each call was earning zero extra reward while burning Canton traffic in proportion to `activityWeight`. The `featuredAppRightCid` field is retained — Splice may reuse it for CIP-0116 (Featured App Staking). Local `ActivityRecord` + `ActivityMarker` creation is unchanged (used by backend dashboards).
+- **Daml:** `DCASchedule.ensure` now asserts `frequency /= Hourly`. Reason: Cantex's 10 CC ticket minimum (~$1.50) plus ~$0.10 per-swap Canton network fee makes hourly DCA uneconomic — even a misbehaving client cannot enrol a user into one.
+- **Backend:** `cantexOperatorKey` / `cantexTradingKey` envs removed from `config.ts`. Keys live exclusively in the sidecar's `.env`; the backend only knows the sidecar URL (`CANTEX_SIDECAR_URL`) and shared auth token (`CANTEX_SIDECAR_AUTH_TOKEN`).
+- **Backend:** `engine/featured-app.ts::recordActivity` doc-comment updated to point at CIP-0104 envelope semantics.
+
+### Removed
+- **Backend:** `src/cantex-client.ts` (native TS Cantex client) — broken in 5+ places (wrong response schemas for `getAccountInfo`, `getAccountAdmin`, `getPoolsInfo`, `getSwapQuote`, `SwapBuildResponse`; no WebSocket-confirmed swap execution). Replaced by `cantex-sidecar.ts` which talks HTTP to the Python sidecar.
+- **Backend tests:** `tests/cantex-client.test.ts` (stale — exercised the removed file).
+- **Daml:** `FeaturedAppRight_CreateActivityMarker` import in `FeaturedApp.daml`.
+
+### Fixed
+- Backend now exposes the same `CantexClient` interface to all callers regardless of whether real keys are configured — the previous code path tried to call the broken native client whenever `cantexOperatorKey` was set, leading to "Invalid getAccountInfo response" errors on the first real swap attempt.
 
 ## [0.3.3] - 2026-04-17
 

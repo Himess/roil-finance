@@ -39,5 +39,14 @@ setup/
 docs-internal/
 CLAUDE.md
 .claude/
+ROIL-PROJE-DETAYLI-ACIKLAMA.md
+Roil-FA-Application-Review.md
+SPRINT*_REPORT.md
+
+# Sidecar local runtime (real credentials + venv)
+sidecars/**/venv/
+sidecars/**/api_key.txt
+sidecars/**/.env
+__pycache__/
 
 .vercel/

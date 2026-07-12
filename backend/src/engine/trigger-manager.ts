@@ -7,6 +7,7 @@ import { dcaEngine, type DCASchedulePayload } from './dca.js';
 import { compoundEngine } from './compound.js';
 import { rewardsEngine } from './rewards.js';
 import { featuredApp } from './featured-app.js';
+import { currentRoundSlot } from './round-scheduler.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -560,9 +561,12 @@ export class TriggerManager {
    * Process all tracked DCA schedules: execute those that are due.
    */
   private async processDCASchedules(platform: string): Promise<void> {
-    // Delegate to DCA engine which already has sophisticated due-checking logic
+    // Delegate to DCA engine which already has sophisticated due-checking logic.
+    // `roundAware` spreads executions across the 144 Canton rounds in a day
+    // (see engine/round-scheduler.ts) — uniform traffic = optimal CIP-0104
+    // reward share and no $1.50/tx CIP-0098 cap binding.
     try {
-      const result = await dcaEngine.executeDueSchedules();
+      const result = await dcaEngine.executeDueSchedules({ roundAware: true });
       if (result.executed > 0) {
         this.eventCounts.dcaExecutions += result.executed;
         logger.info('[trigger-manager] DCA execution cycle complete', {
@@ -571,7 +575,15 @@ export class TriggerManager {
         });
 
         try {
-          metrics.increment(METRICS.dcaExecuted, {}, result.executed);
+          // Label by current 10-min slot (0..143) so the Grafana dashboard
+          // can show per-slot histograms — that's how we verify that the
+          // round-aware scheduler is producing the uniform distribution
+          // the CIP-0104 reward share depends on.
+          metrics.increment(
+            METRICS.dcaExecuted,
+            { slot: String(currentRoundSlot()) },
+            result.executed,
+          );
         } catch {
           // Metrics may not be initialized
         }
@@ -743,6 +755,9 @@ export class TriggerManager {
     }
 
     try {
+      // Cron fallback should NOT be round-aware — the breaker only trips
+      // when we've already missed enough polls that draining the backlog
+      // matters more than uniform attribution.
       await compoundEngine.checkAndCompoundAll();
     } catch (err) {
       logger.error('[trigger-manager] Cron fallback: compound failed', {

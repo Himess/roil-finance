@@ -260,20 +260,52 @@ testComplete_RejectsFailed = script do
       completedAt = time (date 2026 Mar 16) 10 0 5
 
 -- | Test 14: Multiple executions accumulate correctly.
+-- (Uses Daily here because Hourly is rejected at the ensure-clause level
+-- — see testHourlyRejected.)
 testMultipleExecutions : Script ()
 testMultipleExecutions = script do
   (platform, alice, usdcx, cbtc, t0) <- setupFixture
   scheduleCid <- submit platform do
     createCmd DCASchedule with
       platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
-      amountPerBuy = 50.0; frequency = Hourly; totalExecutions = 0
+      amountPerBuy = 50.0; frequency = Daily; totalExecutions = 0
       isActive = True; createdAt = t0
   -- 3 consecutive executions
   r1 <- submit platform do exerciseCmd scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 10 0 0
-  r2 <- submit platform do exerciseCmd r1.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 11 0 0
-  r3 <- submit platform do exerciseCmd r2.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 16) 12 0 0
+  r2 <- submit platform do exerciseCmd r1.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 17) 10 0 0
+  _  <- submit platform do exerciseCmd r2.scheduleCid ExecuteDCA with executedAt = time (date 2026 Mar 18) 10 0 0
   schedules <- query @DCASchedule alice
   let (_, sched) = head schedules
   assertMsg "totalExecutions is 3" (sched.totalExecutions == 3)
   executions <- query @DCAExecution alice
   assertMsg "Should have 3 executions" (length executions == 3)
+
+-- | Test 15: Hourly DCA must be rejected by the ensure clause.
+-- Reasoning: at Cantex's 10 CC minimum ticket, hourly DCA is uneconomic
+-- (24 × 30 = 720 swaps/month, ~$72/month in network fees alone). Enforcing
+-- this in Daml means a backend bug or misbehaving client cannot enrol a
+-- user into one.
+testHourlyRejected : Script ()
+testHourlyRejected = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  submitMustFail platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 50.0; frequency = Hourly; totalExecutions = 0
+      isActive = True; createdAt = t0
+  pure ()
+
+-- | Test 16: UpdateDCAFrequency to Hourly must also fail — defence in
+-- depth so a previously-valid schedule can't be downgraded to an
+-- uneconomic cadence after the fact.
+testUpdateToHourlyRejected : Script ()
+testUpdateToHourlyRejected = script do
+  (platform, alice, usdcx, cbtc, t0) <- setupFixture
+  scheduleCid <- submit platform do
+    createCmd DCASchedule with
+      platform; user = alice; sourceAsset = usdcx; targetAsset = cbtc
+      amountPerBuy = 50.0; frequency = Daily; totalExecutions = 0
+      isActive = True; createdAt = t0
+  submitMustFail alice do
+    exerciseCmd scheduleCid UpdateDCAFrequency with newFrequency = Hourly
+  pure ()
